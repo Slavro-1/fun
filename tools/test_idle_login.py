@@ -1,5 +1,6 @@
 """Exercise installer upgrades and the command-line watcher in private temp dirs."""
 import os
+import select
 from pathlib import Path
 import json
 import signal
@@ -85,13 +86,15 @@ class LoginTests(unittest.TestCase):
                 duplicate = subprocess.run([cli, '--now'], env=self.env, capture_output=True, timeout=3)
                 self.assertNotEqual(duplicate.returncode, 0)
                 self.assertIn(b'another fun-idle terminal', duplicate.stderr)
-                watcher.kill()
-                watcher.wait(timeout=2)
-                stat = Path(f'/proc/{pid}/stat')
-                deadline = time.monotonic() + 2
-                while stat.exists() and stat.read_text().split()[2] != 'Z' and time.monotonic() < deadline:
-                    time.sleep(.05)
-                self.assertFalse(stat.exists() and stat.read_text().split()[2] != 'Z')
+                # A pidfd becomes readable on exit, including before reaping.
+                # Reading /proc/<pid>/stat races with the process disappearing.
+                fd = os.pidfd_open(pid)
+                try:
+                    watcher.kill()
+                    watcher.wait(timeout=2)
+                    self.assertTrue(select.select([fd], [], [], 2)[0])
+                finally:
+                    os.close(fd)
             finally:
                 if watcher.poll() is None:
                     watcher.terminate()
