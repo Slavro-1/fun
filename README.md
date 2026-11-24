@@ -15,11 +15,11 @@ Screenshots and animations will be added later.
 Developed and tested on **Pop!_OS 24.04 with KDE Plasma and kitty**. KDE is not required: `fun-config` is a GTK4 application that can run in other compatible graphical desktop sessions. Other distributions and desktop sessions have not been manually verified.
 
 - **Core scenes:** Linux, Bash, Python 3.11 or newer, and a UTF-8 terminal. The Python renderer uses the standard library. A truecolor terminal gives the best half-block output.
-- **Rotating launcher:** Common GNU/Linux tools including `readlink`, `timeout`, `nice`, `shuf`, `stty`, and `clear`. Optional terminal programs are used only when present; their package names vary by distribution.
+- **Rotating launcher:** GNU/Linux command-line tools including `readlink`, `timeout`, `nice`, `shuf`, `stty`, and `clear`. The launcher skips optional terminal programs that are not installed; package names vary by distribution.
 - **Settings window:** GTK4 and PyGObject. Pillow is needed for scene thumbnails, but not for the renderer or saved settings. A graphical session and a terminal emulator are needed for previews.
 - **Idle watcher:** Linux `/proc` and `/sys` facilities and a working idle detector. It tries readable `/dev/input/event*` devices, GNOME Mutter, `xprintidle` on X11, and systemd-logind. Availability depends on the session and permissions. The default fullscreen terminal is kitty; `FUN_TERMINAL` can supply another launch command.
 
-The installer does not use apt or install packages. Debian, Fedora, Arch, and other Linux distributions may work when these requirements are met, but they have not been tested here. The installer uses `sudo` to write to `/usr/local` and creates launchers in your home directory.
+The installer does not use apt or install packages. Debian, Fedora, Arch, and other Linux distributions are expected to work when these requirements are met, but they have not been tested here. The install layout assumes `/usr/local`, `sudo`, and a desktop that reads user autostart entries. Check those conventions on your distribution before installing.
 
 ## Install
 
@@ -52,7 +52,7 @@ fun-idle --status                        # show current idle conditions
 fun-idle                                 # run the watcher directly
 ```
 
-The idle watcher starts at login after installation when the desktop honors the autostart entry. By default, it launches after 13 idle minutes while charging, with the lid open and no competing idle inhibitor. Use `fun-idle --diagnose` before relying on it. Its default launch uses kitty; for another terminal, set `FUN_TERMINAL` to a command that starts `fun` in that terminal.
+The idle watcher starts at login after installation when the desktop honors the autostart entry. By default, it launches after 13 idle minutes while charging, with the lid open and no competing idle inhibitor. Use `fun-idle --diagnose` before relying on it: idle detection depends on your session, and access to input devices varies by distribution. Its default launch uses kitty; for another terminal, set `FUN_TERMINAL` to a command that starts `fun` in that terminal.
 
 ## Graphics and settings
 

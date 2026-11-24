@@ -360,7 +360,7 @@ def diagnose():
     devs = ev._devices()
     print("input devices:", devs or "none found")
     if devs and not ev.ok():
-        print("  -> cannot open /dev/input/event*: run  sudo usermod -aG input $USER  then log out and in again")
+        print("  -> cannot read /dev/input/event*; check device permissions or use another backend")
     print("chosen       :", be.name if be else "NONE (screensaver would never start)")
     return 0 if be else 1
 

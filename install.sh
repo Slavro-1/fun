@@ -51,10 +51,7 @@ Categories=Settings;Graphics;
 Terminal=false
 DESK
 
-if ! id -nG | tr ' ' '\n' | grep -qx input; then
-  echo "Idle input detection may require membership in the input group on Wayland."
-  echo "Run fun-idle --diagnose first; see README.md before granting that access."
-fi
+echo "Idle detection depends on your session and device permissions; check fun-idle --diagnose."
 echo
 echo "Done. Kitty graphics auto-detects support. Set FUN_GFX=0 for half-block output."
 echo "Next:        fun-idle --diagnose     (shows which idle detector works)"
