@@ -1,10 +1,11 @@
-# v0.1.0 release checklist
+# Release verification checklist
 
-- [x] Keep the 41-scene renderer and launcher behavior unchanged.
-- [x] Exclude local backups, caches, logs, development notes, and generated previews from Git.
-- [x] Document install, use, settings, graphics fallback, troubleshooting, and uninstall.
-- [x] Run syntax checks, all-scene selftest, GUI inventory tests, isolated settings save/load, and PTY regressions.
-- [ ] Replace `[COPYRIGHT HOLDER]` in `LICENSE` with the intended legal name.
-- [ ] Confirm ownership and redistribution rights for all code and any screenshots added later. No generated previews or external artwork are part of this release set.
-- [ ] On the target Pop!_OS desktop, manually check kitty graphics, `fun-config`, idle detection, autostart, installation, and uninstall. The automated checks do not replace these hardware/session checks.
-- [ ] Review the staged file list and diff before committing or creating the `v0.1.0` tag.
+The `v0.1.0` tag records the original source release. For future updates, check the active scene inventory with `python3 extras.py --list`; do not maintain a separate scene count here.
+
+- [ ] Confirm the MIT copyright holder and redistribution rights for code and any media included in the release.
+- [ ] Run Python compilation, `bash -n` on shell scripts, `fun --selftest`, and the GUI inventory tests.
+- [ ] Run focused PTY checks for graphics fallback, resize, and terminal cleanup when rendering code changes.
+- [ ] On the intended desktop, manually check kitty graphics, `fun-config`, idle detection, autostart, installation, and uninstall. Automated checks do not establish desktop or cross-distribution compatibility.
+- [ ] Review the staged files and diff before a new commit. Create a new tag only when a new release is intended.
+
+Generated previews and local development files are excluded from Git. Add screenshots only after checking that they show current scenes and contain no private desktop content.

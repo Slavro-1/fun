@@ -1,89 +1,77 @@
 # fun
 
-`fun` is a collection of animated terminal screensavers for Linux. It rotates through 41 built-in Python scenes and, when installed, can also include classic terminal programs such as `cmatrix`, `nyancat`, and `sl`. The launcher switches scenes every 10 minutes by default. A GTK settings app and an optional idle watcher make it suitable for a desktop session.
+`fun` brings animated screensavers to a Linux terminal. Run one scene when you want a break, or let the launcher rotate through the built-in scenes every 10 minutes. A GTK4 settings window and an idle watcher are optional.
 
-## Features and terminal support
+Scenes include aurora, koi, nebula, stained glass, and many more. `fun --list` shows the current active set. The launcher can also include classic terminal programs such as `cmatrix`, `nyancat`, and `sl` when they are installed.
 
-- Animated scenes with color, motion, and terminal cleanup on exit.
-- Kitty graphics protocol when a local kitty session confirms support; RGB images use shared memory when possible and compressed transfer otherwise.
-- Truecolor Unicode half-block fallback in other terminals, tmux, screen, and SSH sessions. Set `FUN_GFX=0` to force it.
-- Scene selection, random or sequential order, quality settings, and saved preferences.
-- Optional idle launch that checks user activity, lid, charging state, and other idle inhibitors.
-
-Developed for Pop!_OS with COSMIC and kitty. The renderer and command-line launcher target Linux terminals; `fun-idle` uses Linux and desktop-session facilities. Other distributions and terminals may work, especially with half-block output. A truecolor terminal gives the best fallback appearance.
+You can choose scenes, rotation order, and quality; save preferences in the settings window; and optionally start a fullscreen saver after a period of inactivity.
 
 ## Gallery
 
-Screenshots are intentionally left as placeholders for this first release; generated development previews have not been included in the distribution.
+Screenshots and animations will be added later.
 
-| Scene | Screenshot |
-| --- | --- |
-| Aurora | Screenshot coming soon |
-| Koi | Screenshot coming soon |
-| Nebula | Screenshot coming soon |
-| Stained Glass | Screenshot coming soon |
-| Silk | Screenshot coming soon |
-| Metropolis | Screenshot coming soon |
+## Requirements and environments
 
-Run `fun --list` for the current complete scene inventory.
+Developed and tested on **Pop!_OS 24.04 with KDE Plasma and kitty**. KDE is not required: `fun-config` is a GTK4 application that can run in other compatible graphical desktop sessions. Other distributions and desktop sessions have not been manually verified.
 
-## Requirements
+- **Core scenes:** Linux, Bash, Python 3.11 or newer, and a UTF-8 terminal. The Python renderer uses the standard library. A truecolor terminal gives the best half-block output.
+- **Rotating launcher:** Common GNU/Linux tools including `readlink`, `timeout`, `nice`, `shuf`, `stty`, and `clear`. Optional terminal programs are used only when present; their package names vary by distribution.
+- **Settings window:** GTK4 and PyGObject. Pillow is needed for scene thumbnails, but not for the renderer or saved settings. A graphical session and a terminal emulator are needed for previews.
+- **Idle watcher:** Linux `/proc` and `/sys` facilities and a working idle detector. It tries readable `/dev/input/event*` devices, GNOME Mutter, `xprintidle` on X11, and systemd-logind. Availability depends on the session and permissions. The default fullscreen terminal is kitty; `FUN_TERMINAL` can supply another launch command.
 
-- Linux, Bash, Python **3.11 or newer** (for `tomllib`), and a UTF-8 terminal. Python 3.12 is the tested development version.
-- The launcher uses common GNU/Linux commands including `timeout`, `nice`, `shuf`, `stty`, and `clear`. `systemd-inhibit` and GNOME `gsettings` are used when available to manage idle and sleep behavior.
-- **Kitty** is recommended for graphics and required by the default `fun-idle` launch command. Set `FUN_TERMINAL` to a suitable custom command if using another terminal.
-- **GTK 4 / PyGObject** is needed only for `fun-config`. **Pillow** is needed only to generate its scene thumbnails; the renderer itself uses Python's standard library and does not require NumPy.
-- Optional rotation programs are skipped if absent: `cmatrix`, `asciiquarium`, `cbonsai`, `pipes.sh`, `nyancat`, `cacafire`, `cacademo`, `aafire`, `tty-clock`, `cowsay`, `fortune`, `lolcat`, and `sl`. Install these separately if wanted; their availability and package names vary by distribution.
+The installer does not use apt or install packages. Debian, Fedora, Arch, and other Linux distributions may work when these requirements are met, but they have not been tested here. The installer uses `sudo` to write to `/usr/local` and creates launchers in your home directory.
 
 ## Install
 
-Clone or download this repository, then from its directory:
+Clone or download this repository. From its directory, run:
 
 ```bash
 ./install.sh
 ```
 
-The installer checks syntax and all Python scenes before using `sudo`. It places programs in `/usr/local/bin`, shared files in `/usr/local/lib/fun`, and desktop launchers in your home directory. Existing program and launcher files receive timestamped backups. Review the script before running it. It does not install dependencies for you.
+The installer checks syntax and the scenes before copying files. It places commands in `/usr/local/bin`, shared files in `/usr/local/lib/fun`, and a per-user idle autostart entry in your home directory. Existing program files and desktop entries receive timestamped backups. Review the script before running it. It does not install dependencies or change group membership.
 
-To try the project from the checkout without installing:
+To try the core scenes from the checkout without installing:
 
 ```bash
 ./fun --list
 ./fun --scene aurora
 ```
 
-`fun-idle --diagnose` reports the available idle detector. On some Wayland systems, reading `/dev/input/event*` needs membership in the `input` group. That group grants access to raw input events; add yourself only if you want that backend and understand the access, then log out and back in. The installer does not change group membership.
-
 ## Use
 
 ```bash
-fun                         # rotate scenes; Ctrl-C exits
-fun --list                  # active Python scene names
-fun --scene koi             # one scene; q or Ctrl-C exits
-fun --test 5                # run each Python scene for 5 seconds in this terminal
-fun --selftest              # headless renderer check
+fun                                      # rotate scenes; Ctrl-C exits
+fun --list                               # list active built-in scenes
+fun --scene koi                          # run one scene; q or Ctrl-C exits
 fun --minutes 5 --order sequential --scenes aurora,koi
-fun --quality medium        # low, medium, high, ultra, or auto
-fun-config                  # GTK settings window
-fun-idle --diagnose         # inspect idle detection
-fun-idle --status           # show current idle conditions
-fun-idle                    # run watcher directly
+fun --quality medium                     # low, medium, high, ultra, or auto
+fun-config                               # open GTK4 settings
+fun-idle --diagnose                      # check available idle detectors
+fun-idle --status                        # show current idle conditions
+fun-idle                                 # run the watcher directly
 ```
 
-The settings app saves duration, order, quality, enabled scenes, and idle options in `${XDG_CONFIG_HOME:-~/.config}/fun/settings.toml`. The launcher reads this file at startup; the idle watcher picks up saved changes while running. Command-line options and `FUN_*` environment variables can override saved launcher values. By default, `fun-idle` starts after 13 idle minutes while charging, with the lid open and no competing idle inhibitor. The installer adds a per-user autostart entry.
+The idle watcher starts at login after installation when the desktop honors the autostart entry. By default, it launches after 13 idle minutes while charging, with the lid open and no competing idle inhibitor. Use `fun-idle --diagnose` before relying on it. Its default launch uses kitty; for another terminal, set `FUN_TERMINAL` to a command that starts `fun` in that terminal.
 
-The built-in Python scenes participate in rotation alongside any installed optional terminal programs. Use `--scenes` or the settings app to choose Python scenes. `FUN_MINUTES=20 fun` changes the interval; `FUN_ONLY='python3' fun` limits rotation to matching launcher commands. `FUN_NO_POWER=1 fun` disables the launcher's GNOME power-setting changes.
+## Graphics and settings
 
-## Graphics and troubleshooting
+In a local kitty session, `fun` uses the kitty graphics protocol when support is detected. In other terminals, tmux, screen, or SSH, the renderer uses Unicode half-blocks; truecolor support improves the result. Use `FUN_GFX=0 fun --scene koi` to force half-block output. `FUN_RES=low|med|high|ultra` sets graphics resolution, and `python3 extras.py --gfx-info` reports the detected path from the checkout.
 
-Use `FUN_GFX=0 fun --scene koi` for half-block output. `FUN_RES=low|med|high|ultra` controls graphics resolution (`ultra` is the default). `python3 extras.py --gfx-info` shows the detected graphics path in a terminal. If kitty graphics does not appear, try a local kitty session outside tmux/screen, then check the fallback with `FUN_GFX=0`.
+`fun-config` saves scene selection, rotation interval, quality, and idle options in `~/.config/fun/settings.toml` by default, or under `$XDG_CONFIG_HOME/fun/` when set. The launcher reads settings at startup; the idle watcher reloads saved changes while running. Command-line options and `FUN_*` environment variables can override saved values.
 
-If the idle watcher does not start, run `fun-idle --diagnose` and check `~/.cache/fun/idle.log`. If a scene fails during rotation, check `~/.cache/fun/launcher.log`. If the settings window does not open, check GTK 4, PyGObject, and the graphical session; thumbnail generation additionally requires Pillow. `fun --selftest` works without a graphical terminal. Use `Ctrl-C` or `q` to exit a scene; if a terminal was interrupted hard, run `reset`.
+## Troubleshooting
+
+- If a scene or the launcher fails, run `fun --selftest` and check `~/.cache/fun/launcher.log` (or `$XDG_CACHE_HOME/fun/launcher.log`).
+- If graphics do not appear in kitty, try a local kitty window outside tmux or screen. `FUN_GFX=0` checks the half-block path.
+- If `fun-config` does not open, check GTK4, PyGObject, and the graphical session. Missing Pillow affects thumbnails only.
+- If `fun-idle` does not start a saver, run `fun-idle --diagnose` and check `~/.cache/fun/idle.log`. Access to `/dev/input/event*` can require device permissions; another backend may work. The installer does not grant input access.
+- After an abrupt terminal interruption, run `reset` if the display looks wrong.
 
 ## Uninstall
 
-From the checkout, run `./uninstall.sh`. It removes the installed programs and the desktop entries created by the installer. Saved settings, caches, and timestamped backups are kept for review. Remove `${XDG_CONFIG_HOME:-~/.config}/fun` and `${XDG_CACHE_HOME:-~/.cache}/fun` manually if you want to discard personal settings and logs. If you manually joined the `input` group, undo that separately after considering other programs that use it.
+From the checkout, run `./uninstall.sh`. It removes installed program files and the desktop entries made by the installer. Saved settings, logs, and timestamped backups remain for review. Remove your `fun` directories under `~/.config` and `~/.cache` (or their XDG overrides) separately if you no longer want them.
 
 ## License
 
-MIT; see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

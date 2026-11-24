@@ -165,8 +165,9 @@ def main():
             launch = LIB / 'fun' if (LIB / 'fun').exists() else Path('/usr/local/bin/fun')
             if shutil.which('kitty'):
                 cmd = ['kitty', '--title', f'fun preview: {name}', str(launch), '--scene', name]
-            elif shutil.which('x-terminal-emulator'):
-                cmd = ['x-terminal-emulator', '-e', str(launch), '--scene', name]
+            elif terminal := next((term for term in ('x-terminal-emulator', 'konsole', 'xterm')
+                                   if shutil.which(term)), None):
+                cmd = [terminal, '-e', str(launch), '--scene', name]
             else:
                 error.set_text('Install kitty or another terminal emulator to preview scenes.')
                 return
