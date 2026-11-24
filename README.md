@@ -1,76 +1,97 @@
 # fun
 
-`fun` brings animated screensavers to a Linux terminal. Run one scene when you want a break, or let the launcher rotate through the built-in scenes every 10 minutes. A GTK4 settings window and an idle watcher are optional.
+Little worlds for your Linux terminal. Pick a scene, or let `fun` wander through all 41 of them.
 
-Scenes include aurora, koi, nebula, stained glass, and many more. `fun --list` shows the current active set. The launcher can also include classic terminal programs such as `cmatrix`, `nyancat`, and `sl` when they are installed.
+![Animated koi swimming among lily pads in fun](assets/motion/koi.gif)
 
-You can choose scenes, rotation order, and quality; save preferences in the settings window; and optionally start a fullscreen saver after a period of inactivity.
+## Quick install
 
-## Gallery
-
-Screenshots and animations will be added later.
-
-## Requirements and environments
-
-Developed and tested on **Pop!_OS 24.04 with KDE Plasma and kitty**. KDE is not required: `fun-config` is a GTK4 application that can run in other compatible graphical desktop sessions. Other distributions and desktop sessions have not been manually verified.
-
-- **Core scenes:** Linux, Bash, Python 3.11 or newer, and a UTF-8 terminal. The Python renderer uses the standard library. A truecolor terminal gives the best half-block output.
-- **Rotating launcher:** GNU/Linux command-line tools including `readlink`, `timeout`, `nice`, `shuf`, `stty`, and `clear`. The launcher skips optional terminal programs that are not installed; package names vary by distribution.
-- **Settings window:** GTK4 and PyGObject. Pillow is needed for scene thumbnails, but not for the renderer or saved settings. A graphical session and a terminal emulator are needed for previews.
-- **Idle watcher:** Linux `/proc` and `/sys` facilities and a working idle detector. It tries readable `/dev/input/event*` devices, GNOME Mutter, `xprintidle` on X11, and systemd-logind. Availability depends on the session and permissions. The default fullscreen terminal is kitty; `FUN_TERMINAL` can supply another launch command.
-
-The installer does not use apt or install packages. Debian, Fedora, Arch, and other Linux distributions are expected to work when these requirements are met, but they have not been tested here. The install layout assumes `/usr/local`, `sudo`, and a desktop that reads user autostart entries. Check those conventions on your distribution before installing.
-
-## Install
-
-Clone or download this repository. From its directory, run:
+Open a terminal and paste these three commands:
 
 ```bash
+git clone https://github.com/Slavro-1/fun.git
+cd fun
 ./install.sh
 ```
 
-The installer checks syntax and the scenes before copying files. It places commands in `/usr/local/bin`, shared files in `/usr/local/lib/fun`, and a per-user idle autostart entry in your home directory. Existing program files and desktop entries receive timestamped backups. Review the script before running it. It does not install dependencies or change group membership.
-
-To try the core scenes from the checkout without installing:
+Then start the screensaver:
 
 ```bash
-./fun --list
-./fun --scene aurora
+fun
 ```
 
-## Use
+Press **Ctrl+C** to leave. Open the settings window with `fun-config`.
+
+The first command downloads the project, the second enters its folder, and the third installs the commands. The installer may ask for your password through `sudo` to copy program files into `/usr/local`; it does not install system packages.
+
+## A few places to drift
+
+There are quiet scenes, bright ones, and a few surprises. `fun` changes scenes every 10 minutes by default. You can also choose a favorite with `fun --scene aurora` or see every available scene with `fun --list`.
+
+<p align="center">
+  <img src="assets/gallery/aurora.png" alt="Aurora over a mountain skyline" width="48%">
+  <img src="assets/gallery/stainedglass.png" alt="Colorful stained glass window" width="48%">
+  <br><sub>Aurora · Stained glass</sub>
+</p>
+<p align="center">
+  <img src="assets/gallery/jellyfish.png" alt="Glowing jellyfish in deep water" width="48%">
+  <img src="assets/gallery/lanterns.png" alt="Floating lanterns reflected on a lake" width="48%">
+  <br><sub>Jellyfish · Lanterns</sub>
+</p>
+<p align="center">
+  <img src="assets/gallery/nebula.png" alt="Colorful nebula and stars" width="48%">
+  <img src="assets/gallery/silk.png" alt="Flowing luminous silk strands" width="48%">
+  <br><sub>Nebula · Silk</sub>
+</p>
+
+More motion, straight from the renderer:
+
+<p align="center">
+  <img src="assets/motion/nebula.gif" alt="Animated nebula" width="48%">
+  <img src="assets/motion/silk.gif" alt="Animated luminous silk" width="48%">
+</p>
+
+## Make it yours
+
+Run `fun-config` to choose scenes, rotation order, quality, and idle behavior. It saves your choices for the next launch.
+
+<p align="center"><img src="assets/fun-config.png" alt="The real fun-config GTK4 settings window with the scene list populated" width="700"></p>
+
+Useful shortcuts:
 
 ```bash
-fun                                      # rotate scenes; Ctrl-C exits
-fun --list                               # list active built-in scenes
-fun --scene koi                          # run one scene; q or Ctrl-C exits
-fun --minutes 5 --order sequential --scenes aurora,koi
-fun --quality medium                     # low, medium, high, ultra, or auto
-fun-config                               # open GTK4 settings
-fun-idle --diagnose                      # check available idle detectors
-fun-idle --status                        # show current idle conditions
-fun-idle                                 # run the watcher directly
+fun --scene koi       # stay with one scene; press q or Ctrl+C to leave
+fun --list            # see all built-in scenes
+fun --quality medium  # choose low, medium, high, or ultra
 ```
 
-The idle watcher starts at login after installation when the desktop honors the autostart entry. By default, it launches after 13 idle minutes while charging, with the lid open and no competing idle inhibitor. Use `fun-idle --diagnose` before relying on it: idle detection depends on your session, and access to input devices varies by distribution. Its default launch uses kitty; for another terminal, set `FUN_TERMINAL` to a command that starts `fun` in that terminal.
+`fun-idle` can start a fullscreen screensaver after you step away. The installer adds a user autostart entry; run `fun-idle --diagnose` to check whether your desktop has a usable idle detector.
 
-## Graphics and settings
+## Try it first, or download a ZIP
 
-In a local kitty session, `fun` uses the kitty graphics protocol when support is detected. In other terminals, tmux, screen, or SSH, the renderer uses Unicode half-blocks; truecolor support improves the result. Use `FUN_GFX=0 fun --scene koi` to force half-block output. `FUN_RES=low|med|high|ultra` sets graphics resolution, and `python3 extras.py --gfx-info` reports the detected path from the checkout.
+To try a scene from the downloaded folder without installing, run `./fun --scene aurora`. You can also run `./fun --list` to browse the names.
 
-`fun-config` saves scene selection, rotation interval, quality, and idle options in `~/.config/fun/settings.toml` by default, or under `$XDG_CONFIG_HOME/fun/` when set. The launcher reads settings at startup; the idle watcher reloads saved changes while running. Command-line options and `FUN_*` environment variables can override saved values.
+No Git? On this repository's GitHub page, choose **Code → Download ZIP**, extract it, open a terminal in the extracted `fun-main` folder, and run `bash install.sh`. Then use `fun` and `fun-config` as above.
 
-## Troubleshooting
+## Requirements and terminal support
 
-- If a scene or the launcher fails, run `fun --selftest` and check `~/.cache/fun/launcher.log` (or `$XDG_CACHE_HOME/fun/launcher.log`).
-- If graphics do not appear in kitty, try a local kitty window outside tmux or screen. `FUN_GFX=0` checks the half-block path.
-- If `fun-config` does not open, check GTK4, PyGObject, and the graphical session. Missing Pillow affects thumbnails only.
-- If `fun-idle` does not start a saver, run `fun-idle --diagnose` and check `~/.cache/fun/idle.log`. Access to `/dev/input/event*` can require device permissions; another backend may work. The installer does not grant input access.
-- After an abrupt terminal interruption, run `reset` if the display looks wrong.
+**For the screensavers:** Linux, Bash, Python 3.11 or newer, a UTF-8 terminal, and standard GNU/Linux command-line tools. The scene renderer uses the Python standard library. A truecolor terminal gives the best text-mode colors.
+
+**Optional:** GTK4 and PyGObject for `fun-config`; Pillow adds thumbnails in that window. The idle watcher needs an idle detector available to your session. Some extra classic terminal programs are used only when installed.
+
+`fun` uses kitty graphics automatically in a local kitty window. Other terminals use Unicode half-blocks; you can also force that mode with `FUN_GFX=0 fun --scene koi`. The project was developed and tested on Pop!_OS 24.04 with KDE Plasma and kitty. Other distributions have not been manually verified.
+
+## If something goes wrong
+
+- Run `fun --selftest` to check the built-in scenes. Launcher messages go to `~/.cache/fun/launcher.log`.
+- If kitty graphics do not appear, try a local kitty window outside tmux or screen, or use `FUN_GFX=0 fun --scene koi`.
+- If `fun-config` does not open, check GTK4, PyGObject, and that you are in a graphical session. Pillow is only needed for thumbnails.
+- If idle startup does not work, run `fun-idle --diagnose`; idle detection and input access vary by session.
+- If an interrupted scene leaves the terminal looking odd, run `reset`.
 
 ## Uninstall
 
-From the checkout, run `./uninstall.sh`. It removes installed program files and the desktop entries made by the installer. Saved settings, logs, and timestamped backups remain for review. Remove your `fun` directories under `~/.config` and `~/.cache` (or their XDG overrides) separately if you no longer want them.
+From the downloaded project folder, run `./uninstall.sh` (or `bash uninstall.sh` from a ZIP). This removes installed program files and the desktop entries made by the installer. Saved settings, logs, and timestamped backups remain in your home directory.
 
 ## License
 

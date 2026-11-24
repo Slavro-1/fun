@@ -5,6 +5,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TS="$(date +%Y%m%d-%H%M%S)"
 for f in extras.py fun fun-idle fun-config fun_settings.py tools/snap.py; do [ -f "$HERE/$f" ] || { echo "missing $HERE/$f"; exit 1; }; done
+command -v python3 >/dev/null || { echo "fun needs Python 3.11 or newer (python3 not found)." >&2; exit 1; }
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "fun needs Python 3.11 or newer." >&2; exit 1; }
+command -v sudo >/dev/null || { echo "fun needs sudo to copy files into /usr/local." >&2; exit 1; }
 
 echo "== syntax check"
 python3 -I -m py_compile "$HERE/extras.py" "$HERE/fun-idle" "$HERE/fun-config" "$HERE/fun_settings.py" "$HERE/tools/snap.py"
@@ -53,7 +56,9 @@ DESK
 
 echo "Idle detection depends on your session and device permissions; check fun-idle --diagnose."
 echo
-echo "Done. Kitty graphics auto-detects support. Set FUN_GFX=0 for half-block output."
-echo "Next:        fun-idle --diagnose     (shows which idle detector works)"
-echo "             fun --test 5            (runs every scene 5 s in this terminal)"
-echo "             fun-config              (opens GTK settings)"
+echo "Installed! Run fun to start, or fun-config to choose scenes and settings."
+echo "Press Ctrl+C to leave fun. Kitty graphics auto-detects support."
+echo "For automatic idle screensavers, check fun-idle --diagnose."
+if ! python3 -c 'import gi; gi.require_version("Gtk", "4.0"); from gi.repository import Gtk' >/dev/null 2>&1; then
+  echo "Note: fun-config needs GTK4 and PyGObject; the terminal screensavers still work without them."
+fi
