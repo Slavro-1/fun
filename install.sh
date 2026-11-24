@@ -1,38 +1,87 @@
 #!/usr/bin/env bash
 # Installs the fun launcher, renderer, idle watcher, and GTK settings app.
-# Run from the folder that contains: extras.py  fun  fun-idle  fun-config  install.sh
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-TS="$(date +%Y%m%d-%H%M%S)"
-for f in extras.py fun fun-idle fun-config fun_settings.py tools/snap.py; do [ -f "$HERE/$f" ] || { echo "missing $HERE/$f"; exit 1; }; done
-command -v python3 >/dev/null || { echo "fun needs Python 3.11 or newer (python3 not found)." >&2; exit 1; }
-python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "fun needs Python 3.11 or newer." >&2; exit 1; }
-command -v sudo >/dev/null || { echo "fun needs sudo to copy files into /usr/local." >&2; exit 1; }
-
-echo "== syntax check"
-python3 -I -m py_compile "$HERE/extras.py" "$HERE/fun-idle" "$HERE/fun-config" "$HERE/fun_settings.py" "$HERE/tools/snap.py"
-bash -n "$HERE/fun"
-
-echo "== workspace self-test of all scenes in both render modes"
-python3 -I "$HERE/extras.py" --selftest | tail -3
-
-echo "== backup + install"
-sudo install -d /usr/local/lib/fun
-for file in /usr/local/lib/fun/extras.py /usr/local/lib/fun/fun_settings.py /usr/local/lib/fun/snap.py /usr/local/bin/fun /usr/local/bin/fun-idle /usr/local/bin/fun-config; do
-  [ ! -f "$file" ] || sudo cp -a "$file" "$file.bak-$TS"
+PYTHON=/usr/bin/python3
+python_files=(extras.py fun-idle fun-config fun_settings.py tools/snap.py)
+for file in "${python_files[@]}" fun tools/install-deps.sh; do
+  if [[ ! -f "$HERE/$file" ]]; then
+    printf 'Missing %s. Run the installer from a complete checkout or extracted ZIP.\n' "$HERE/$file" >&2
+    exit 1
+  fi
 done
-sudo install -m 755 "$HERE/extras.py" /usr/local/lib/fun/extras.py
-sudo install -m 644 "$HERE/fun_settings.py" /usr/local/lib/fun/fun_settings.py
-sudo install -m 644 "$HERE/tools/snap.py" /usr/local/lib/fun/snap.py
-sudo install -m 755 "$HERE/fun"       /usr/local/bin/fun
-sudo install -m 755 "$HERE/fun-idle"  /usr/local/bin/fun-idle
-sudo install -m 755 "$HERE/fun-config" /usr/local/bin/fun-config
-echo "backups end in .bak-$TS"
 
-echo "== autostart the idle watcher at login"
-mkdir -p "$HOME/.config/autostart" "$HOME/.cache/fun"
-[ ! -f "$HOME/.config/autostart/fun-idle.desktop" ] || cp -p "$HOME/.config/autostart/fun-idle.desktop" "$HOME/.config/autostart/fun-idle.desktop.bak-$TS"
-cat > "$HOME/.config/autostart/fun-idle.desktop" <<'DESK'
+admin=()
+if (( EUID != 0 )); then
+  if ! command -v sudo >/dev/null; then
+    printf 'sudo is required to copy fun into /usr/local. Ask your administrator to enable it.\n' >&2
+    exit 1
+  fi
+  admin=(sudo)
+  printf '%s\n' 'sudo is used for package commands you approve and for copying fun into /usr/local.' \
+    'It may ask for your password.'
+elif [[ -n "${SUDO_USER:-}" ]]; then
+  printf 'Run ./install.sh as your desktop user so login and menu entries are created for you.\n' >&2
+  exit 1
+fi
+
+source "$HERE/tools/install-deps.sh"
+check_dependencies "$PYTHON" "$(installer_distro /etc/os-release /usr/lib/os-release)" "${admin[@]}"
+
+printf '\nChecking the source files and built-in scenes...\n'
+if ! "$PYTHON" -I -c '
+import sys
+from pathlib import Path
+for name in sys.argv[1:]:
+    source = Path(name)
+    compile(source.read_bytes(), str(source), "exec")
+' "${python_files[@]/#/$HERE/}" || ! bash -n "$HERE/fun"; then
+  printf 'Source validation failed. No fun files were copied.\n' >&2
+  exit 1
+fi
+
+if ! selftest_output=$("$PYTHON" -I "$HERE/extras.py" --selftest); then
+  printf '%s\n' "$selftest_output" 'Scene self-test failed. No fun files were copied.' >&2
+  exit 1
+fi
+printf '%s\n' "$selftest_output" | tail -3
+
+printf '\nInstalling program files in /usr/local...\n'
+trap 'printf "Installation stopped while writing files. Resolve the error above and rerun ./install.sh.\n" >&2' ERR
+stamp=$(date +%Y%m%d-%H%M%S-%N)
+backed_up=false
+for dir in /usr/local/lib/fun /usr/local/bin; do
+  if [[ ! -d "$dir" ]]; then "${admin[@]}" install -d "$dir"; fi
+done
+for file in /usr/local/lib/fun/extras.py /usr/local/lib/fun/fun_settings.py /usr/local/lib/fun/snap.py /usr/local/bin/fun /usr/local/bin/fun-idle /usr/local/bin/fun-config; do
+  if [[ -f "$file" || -L "$file" ]]; then
+    "${admin[@]}" cp -a -- "$file" "$file.bak-$stamp"
+    backed_up=true
+  fi
+done
+"${admin[@]}" install -m 755 "$HERE/extras.py" /usr/local/lib/fun/extras.py
+"${admin[@]}" install -m 644 "$HERE/fun_settings.py" /usr/local/lib/fun/fun_settings.py
+"${admin[@]}" install -m 644 "$HERE/tools/snap.py" /usr/local/lib/fun/snap.py
+"${admin[@]}" install -m 755 "$HERE/fun"       /usr/local/bin/fun
+"${admin[@]}" install -m 755 "$HERE/fun-idle"  /usr/local/bin/fun-idle
+"${admin[@]}" install -m 755 "$HERE/fun-config" /usr/local/bin/fun-config
+if $backed_up; then
+  printf 'Previous program files were saved alongside the new files with suffix .bak-%s.\n' "$stamp"
+fi
+
+mkdir -p "$HOME/.config/autostart" "$HOME/.cache/fun" "$HOME/.local/share/applications"
+create_desktop_entry() {
+  local file=$1 temp
+  if [[ -e "$file" || -L "$file" ]]; then return 0; fi
+  temp=$(mktemp "${file%/*}/.fun-entry.XXXXXXXX") || return 1
+  if ! cat > "$temp" || ! mv -nT -- "$temp" "$file"; then
+    rm -f -- "$temp"
+    return 1
+  fi
+  rm -f -- "$temp"
+}
+
+create_desktop_entry "$HOME/.config/autostart/fun-idle.desktop" <<'DESK'
 [Desktop Entry]
 Type=Application
 Name=fun idle screensaver
@@ -41,9 +90,7 @@ Exec=/usr/local/bin/fun-idle
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
 DESK
-mkdir -p "$HOME/.local/share/applications"
-[ ! -f "$HOME/.local/share/applications/fun-config.desktop" ] || cp -p "$HOME/.local/share/applications/fun-config.desktop" "$HOME/.local/share/applications/fun-config.desktop.bak-$TS"
-cat > "$HOME/.local/share/applications/fun-config.desktop" <<'DESK'
+create_desktop_entry "$HOME/.local/share/applications/fun-config.desktop" <<'DESK'
 [Desktop Entry]
 Type=Application
 Name=fun settings
@@ -54,11 +101,6 @@ Categories=Settings;Graphics;
 Terminal=false
 DESK
 
-echo "Idle detection depends on your session and device permissions; check fun-idle --diagnose."
-echo
-echo "Installed! Run fun to start, or fun-config to choose scenes and settings."
-echo "Press Ctrl+C to leave fun. Kitty graphics auto-detects support."
-echo "For automatic idle screensavers, check fun-idle --diagnose."
-if ! python3 -c 'import gi; gi.require_version("Gtk", "4.0"); from gi.repository import Gtk' >/dev/null 2>&1; then
-  echo "Note: fun-config needs GTK4 and PyGObject; the terminal screensavers still work without them."
-fi
+printf '\n%s\n' 'fun installed. Run fun to start and press Ctrl+C to exit.' \
+  'Run fun-config from your graphical desktop to choose scenes and settings.' \
+  'Run fun-idle --diagnose to check idle detection for your session.'

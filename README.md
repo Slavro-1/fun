@@ -6,7 +6,7 @@ Little worlds for your Linux terminal. Pick a scene, or let `fun` wander through
 
 ## Quick install
 
-Open a terminal and paste these three commands:
+Open a terminal as your usual desktop user and run:
 
 ```bash
 git clone https://github.com/Slavro-1/fun.git
@@ -14,15 +14,17 @@ cd fun
 ./install.sh
 ```
 
-Then start the screensaver:
+The installer lists which dependencies are present and which are missing. On Debian, Ubuntu, Pop!_OS, Fedora, and Arch Linux, it shows the package command and asks for your permission before running it. Enter `y` to approve or press **Enter** to skip a prompt. It uses `sudo` for approved package commands and to copy the program files into `/usr/local`, so you may be asked for your password.
+
+The full installation needs system Python 3.11 or newer and GTK4 with PyGObject. If you skip a required package or the import still fails, setup stops before copying program files. Pillow adds thumbnails in the settings window, and kitty provides the graphics mode. You can skip either recommendation and finish setup.
+
+After setup, start the screensaver:
 
 ```bash
 fun
 ```
 
 Press **Ctrl+C** to leave. Open the settings window with `fun-config`.
-
-The first command downloads the project, the second enters its folder, and the third installs the commands. The installer may ask for your password through `sudo` to copy program files into `/usr/local`; it does not install system packages.
 
 ## A few places to drift
 
@@ -65,7 +67,7 @@ fun --list            # see all built-in scenes
 fun --quality medium  # choose low, medium, high, or ultra
 ```
 
-`fun-idle` can start a fullscreen screensaver after you step away. The installer adds a user autostart entry; run `fun-idle --diagnose` to check whether your desktop has a usable idle detector.
+`fun-idle` can start a fullscreen screensaver after you step away. The installer adds a user autostart entry on first install. Run `fun-idle --diagnose` to check whether your desktop has a usable idle detector. The watcher uses kitty by default. To use another terminal, set `FUN_TERMINAL` in the watcher's desktop session environment. For example, if you have xterm, try the override with `FUN_TERMINAL='xterm -fullscreen -e /usr/local/bin/fun' fun-idle --now`.
 
 ## Try it first, or download a ZIP
 
@@ -77,21 +79,33 @@ No Git? On this repository's GitHub page, choose **Code → Download ZIP**, extr
 
 **For the screensavers:** Linux, Bash, Python 3.11 or newer, a UTF-8 terminal, and standard GNU/Linux command-line tools. The scene renderer uses the Python standard library. A truecolor terminal gives the best text-mode colors.
 
-**Optional:** GTK4 and PyGObject for `fun-config`; Pillow adds thumbnails in that window. The idle watcher needs an idle detector available to your session. Some extra classic terminal programs are used only when installed.
+**For the settings window:** GTK 4.8 or newer and PyGObject for `/usr/bin/python3`. Pillow for the same interpreter adds thumbnails. The installer probes that interpreter even if a virtual environment is active.
 
-`fun` uses kitty graphics automatically in a local kitty window. Other terminals use Unicode half-blocks; you can also force that mode with `FUN_GFX=0 fun --scene koi`. The project was developed and tested on Pop!_OS 24.04 with KDE Plasma and kitty. Other distributions have not been manually verified.
+**For automatic idle start:** An idle detector available to your session and a terminal the watcher can launch. It can use readable input devices, GNOME's Mutter service via `gdbus`, `xprintidle` on X11, or `loginctl` on compatible sessions. Extra classic terminal programs are picked up when installed.
+
+`fun` uses kitty graphics automatically in a local kitty window. Other terminals use Unicode half-blocks. You can also force that mode with `FUN_GFX=0 fun --scene koi`. The project was developed and tested on Pop!_OS 24.04 with KDE Plasma and kitty.
+
+If you prefer to install dependencies yourself, use the packages for your distribution with its package manager, then rerun `./install.sh`.
+
+| Distribution | Required packages for system Python and the GUI | Recommended packages |
+| --- | --- | --- |
+| Debian, Ubuntu, Pop!_OS (`apt`) | `python3 python3-gi gir1.2-gtk-4.0` | `python3-pil kitty` |
+| Fedora (`dnf`) | `python3 python3-gobject gtk4` | `python3-pillow kitty` |
+| Arch Linux (`pacman`) | `python python-gobject gtk4` | `python-pillow kitty` |
+
+On other distributions, install system Python 3.11 or newer, PyGObject for that system Python, and the GTK 4.8 or newer runtime and introspection data. The installer prints commands to verify the imports. If APT reports missing indexes or download errors, run `sudo apt update` and retry.
 
 ## If something goes wrong
 
 - Run `fun --selftest` to check the built-in scenes. Launcher messages go to `~/.cache/fun/launcher.log`.
 - If kitty graphics do not appear, try a local kitty window outside tmux or screen, or use `FUN_GFX=0 fun --scene koi`.
-- If `fun-config` does not open, check GTK4, PyGObject, and that you are in a graphical session. Pillow is only needed for thumbnails.
+- If `fun-config` does not open, run it from a terminal in your graphical session to see the error. Rerun `./install.sh` to check the GTK4 and PyGObject imports.
 - If idle startup does not work, run `fun-idle --diagnose`; idle detection and input access vary by session.
 - If an interrupted scene leaves the terminal looking odd, run `reset`.
 
 ## Uninstall
 
-From the downloaded project folder, run `./uninstall.sh` (or `bash uninstall.sh` from a ZIP). This removes installed program files and the desktop entries made by the installer. Saved settings, logs, and timestamped backups remain in your home directory.
+From the downloaded project folder, run `./uninstall.sh` (or `bash uninstall.sh` from a ZIP). This removes installed program files and desktop entries. It keeps saved settings, logs, and timestamped backups. System packages are managed separately by your distribution's package manager.
 
 ## License
 
