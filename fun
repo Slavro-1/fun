@@ -13,7 +13,7 @@ export FUN_GFX="${FUN_GFX:-1}"
 # Environment: FUN_MINUTES (10)  FUN_SECONDS (overrides minutes, for testing)
 #              FUN_JITTER=1 (+-5 min randomness, off by default)
 #              FUN_ONLY=regex (only run savers whose command matches)
-#              FUN_NO_POWER=1 (do not touch GNOME power/idle settings)
+#              Desktop locking and power settings always stay under desktop control.
 export PATH="$PATH:/usr/games:/usr/local/games"
 export CACA_DRIVER=ncurses      # keep libcaca inside the terminal, not its own window
 SELF="$(readlink -f "$0")"
@@ -27,7 +27,7 @@ export FUN_RES="${FUN_RES:-ultra}"
 while [[ "$1" == --minutes || "$1" == --quality || "$1" == --order || "$1" == --scenes ]]; do
   opt=$1; val=${2-}; [[ -n "$val" ]] || { echo "fun: $opt needs a value" >&2; exit 2; }
   case "$opt" in
-    --minutes) [[ "$val" =~ ^[0-9]+$ ]] && (( val >= 1 && val <= 1440 )) || { echo 'fun: invalid minutes' >&2; exit 2; }; FUN_MINUTES=$val ;;
+    --minutes) [[ "$val" =~ ^[0-9]+$ ]] && (( 10#$val >= 1 && 10#$val <= 1440 )) || { echo 'fun: invalid minutes' >&2; exit 2; }; FUN_MINUTES=$((10#$val)) ;;
     --quality) case "$val" in auto|ultra) FUN_RES=ultra;; medium|med) FUN_RES=med;; low|high) FUN_RES=$val;; *) echo 'fun: invalid quality' >&2; exit 2;; esac ;;
     --order) [[ "$val" == random || "$val" == sequential ]] || { echo 'fun: invalid order' >&2; exit 2; }; FUN_ORDER=$val ;;
     --scenes) FUN_SCENES=$val ;;
@@ -36,7 +36,6 @@ while [[ "$1" == --minutes || "$1" == --quality || "$1" == --order || "$1" == --
 done
 export FUN_RES
 MINUTES="${FUN_MINUTES:-10}"
-printf -v EXTRAS_COMMAND '%q' "$EXTRAS"
 LOGDIR="${XDG_CACHE_HOME:-$HOME/.cache}/fun"
 LOG="$LOGDIR/launcher.log"
 mkdir -p "$LOGDIR" 2>/dev/null
@@ -247,12 +246,16 @@ case "$1" in
   --scene)
     [ -n "$2" ] || { echo "usage: fun --scene NAME   (fun --list shows names)"; exit 1; }
     trap 'reset_term' EXIT
-    python3 "$EXTRAS" "$2"; rc=$?
+    python3 "$EXTRAS" "$2" <&0 &
+    scene_pid=$!
+    trap 'kill -TERM "$scene_pid" 2>/dev/null; wait "$scene_pid"; exit 130' INT TERM HUP
+    wait "$scene_pid"; rc=$?
     exit "$rc" ;;
   --test)
     secs="${2:-6}"; pass=0; bad=0; badlist=""
     trap 'reset_term; exit 130' INT TERM HUP
-    for s in $(python3 "$EXTRAS" --list); do
+    mapfile -t scenes < <(python3 "$EXTRAS" --list)
+    for s in "${scenes[@]}"; do
       clear
       err=$(timeout --foreground -k 3 "$secs" python3 "$EXTRAS" "$s" 2>&1 >/dev/tty); rc=$?
       reset_term
@@ -263,72 +266,66 @@ case "$1" in
     [ "$bad" = 0 ]; exit $? ;;
 esac
 
-# ---------- keep the screen awake while running ----------
-# Block sleep/idle through systemd (re-run ourselves under the inhibitor once)
-if [ -z "$FUN_IDLE_LAUNCH" ] && [ -z "$FUN_INH" ] && command -v systemd-inhibit >/dev/null 2>&1 \
-   && systemd-inhibit --what=idle:sleep true >/dev/null 2>&1; then
-  FUN_INH=1 exec systemd-inhibit --what=idle:sleep --who=fun --why="Screensavers running" "$SELF" "$@"
-fi
-
-SAVEFILE="${XDG_CACHE_HOME:-$HOME/.cache}/fun-power.saved"
-mkdir -p "$(dirname "$SAVEFILE")"
-gs_save_set() {  # schema key value : remember the old value, then override it
-  command -v gsettings >/dev/null 2>&1 || return 0
-  local cur; cur=$(gsettings get "$1" "$2" 2>/dev/null) || return 0
-  printf '%s|%s|%s\n' "$1" "$2" "$cur" >> "$SAVEFILE"
-  gsettings set "$1" "$2" "$3" 2>/dev/null
-}
-power_restore() {
-  if [ -f "$SAVEFILE" ]; then
-    local s k v
-    while IFS='|' read -r s k v; do gsettings set "$s" "$k" "$v" 2>/dev/null; done < "$SAVEFILE"
-    rm -f "$SAVEFILE"
-  fi
-  [ -n "$DISPLAY" ] && command -v xset >/dev/null 2>&1 && xset s on +dpms 2>/dev/null
-}
-power_off() {
-  [ -n "$FUN_NO_POWER" ] && return 0
-  gs_save_set org.gnome.desktop.session idle-delay 0
-  gs_save_set org.gnome.desktop.screensaver lock-enabled false
-  gs_save_set org.gnome.settings-daemon.plugins.power idle-dim false
-  gs_save_set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type "'nothing'"
-  gs_save_set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type "'nothing'"
-  [ -n "$DISPLAY" ] && command -v xset >/dev/null 2>&1 && xset s off s noblank -dpms 2>/dev/null
+# Each entry owns an argv array. Shuffle the integer indexes, never shell text.
+SAVERS=()
+add_saver() {
+  local need=$1 index=${#SAVERS[@]}
+  shift
+  command -v "$need" >/dev/null 2>&1 || return 0
+  [[ -z "$FUN_ONLY" || "$*" =~ $FUN_ONLY ]] || return 0
+  declare -ga "saver_$index"
+  local -n argv="saver_$index"
+  argv=("$@")
+  SAVERS+=("$index")
 }
 
-# ---------- list of "needed-command|command to run" ----------
-SAVERS=(
-  "cmatrix|cmatrix -ab -u 2 -r"
-  "cmatrix|cmatrix -ab -u 3 -C green"
-  "asciiquarium|asciiquarium"
-  "cbonsai|cbonsai -l -i -t 0.06 -w 8"
-  "pipes.sh|pipes.sh -p 5 -f 60 -r 3000 -R"
-  "nyancat|nyancat"
-  "cacafire|cacafire"
-  "cacademo|cacademo"
-  "aafire|aafire -driver curses"
-  "tty-clock|tty-clock -s -c -C 5 -B"
-  "cowsay|$SELF --cow"
-  "sl|$SELF --sl SECS"
-  "python3|$SELF --plasma"
-  "python3|$SELF --stars"
-  "python3|$SELF --life"
-  "bash|$SELF --dvd"
-)
-# The engine registry is the single source for Python rotation scenes.
 scene_names=$(python3 "$EXTRAS" --list) || { echo "fun: cannot load scenes from $EXTRAS" >&2; exit 1; }
-[[ -n "$scene_names" ]] || { echo "fun: no scenes in $EXTRAS" >&2; exit 1; }
-while IFS= read -r scene; do
-  if [[ -n "$scene" && ( -z "${FUN_SCENES:-}" || ",$FUN_SCENES," == *",$scene,"* ) ]]; then
-    SAVERS+=("python3|python3 $EXTRAS_COMMAND $scene")
+[[ -n "$scene_names" ]] || { echo "fun: no active scenes in $EXTRAS" >&2; exit 1; }
+mapfile -t active <<< "$scene_names"
+requested=()
+contains_scene() {
+  local wanted=$1 name
+  shift
+  for name in "$@"; do
+    [[ $name == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
+if [[ -z "${FUN_SCENES:-}" ]]; then
+  add_saver cmatrix cmatrix -ab -u 2 -r
+  add_saver cmatrix cmatrix -ab -u 3 -C green
+  add_saver asciiquarium asciiquarium
+  add_saver cbonsai cbonsai -l -i -t 0.06 -w 8
+  add_saver pipes.sh pipes.sh -p 5 -f 60 -r 3000 -R
+  add_saver nyancat nyancat
+  add_saver cacafire cacafire
+  add_saver cacademo cacademo
+  add_saver aafire aafire -driver curses
+  add_saver tty-clock tty-clock -s -c -C 5 -B
+  add_saver cowsay "$SELF" --cow
+  add_saver sl "$SELF" --sl
+  for classic in plasma stars life dvd; do
+    add_saver bash "$SELF" "--$classic"
+  done
+else
+  if [[ "$FUN_SCENES" == *, || "$FUN_SCENES" == ,* || "$FUN_SCENES" == *,,* || "$FUN_SCENES" == *$'\n'* ]]; then
+    echo 'fun: expected a comma-separated list of active scene names' >&2; exit 2
   fi
-done <<< "$scene_names"
-if [[ -n "${FUN_SCENES:-}" ]] && ! printf '%s\n' "${SAVERS[@]}" | grep -q "python3 $EXTRAS_COMMAND "; then
-  echo 'fun: no enabled active scenes' >&2; exit 2
+  IFS=, read -ra requested <<< "$FUN_SCENES"
+  for scene in "${requested[@]}"; do
+    if ! contains_scene "$scene" "${active[@]}"; then
+      echo "fun: inactive or unknown scene '$scene' (see fun --list)" >&2; exit 2
+    fi
+  done
 fi
-if [ -n "$FUN_ONLY" ]; then
-  mapfile -t SAVERS < <(printf '%s\n' "${SAVERS[@]}" | grep -E -- "$FUN_ONLY")
-  [ "${#SAVERS[@]}" -gt 0 ] || { echo "fun: FUN_ONLY='$FUN_ONLY' matches nothing"; exit 1; }
+for scene in "${active[@]}"; do
+  if (( ! ${#requested[@]} )) || contains_scene "$scene" "${requested[@]}"; then
+    add_saver python3 python3 "$EXTRAS" "$scene"
+  fi
+done
+if (( ! ${#SAVERS[@]} )); then
+  echo "fun: no enabled scenes match FUN_ONLY='$FUN_ONLY'" >&2; exit 1
 fi
 
 child=""
@@ -338,12 +335,8 @@ on_signal() {
   cleanup; exit 0
 }
 trap on_signal INT TERM HUP
-# A watcher-owned saver must leave desktop locking and sleep policy in force.
-if [[ -z "$FUN_IDLE_LAUNCH" ]]; then
-  trap power_restore EXIT
-  power_restore
-  power_off
-fi
+# TOML accepts fractional minutes; convert once before integer jitter arithmetic.
+base_seconds=$(python3 -c 'import sys; print(round(float(sys.argv[1]) * 60))' "$MINUTES") || exit 2
 log "start minutes=$MINUTES pid=$$"
 echo "fun: starting, switching every ~${MINUTES} min. Ctrl-C to stop."; sleep 2
 fails=0
@@ -352,27 +345,27 @@ while :; do
   if [[ "${FUN_ORDER:-random}" == sequential ]]; then order=("${SAVERS[@]}")
   else mapfile -t order < <(printf '%s\n' "${SAVERS[@]}" | shuf); fi
   for entry in "${order[@]}"; do
-    need=${entry%%|*}; cmd=${entry#*|}
-    command -v "$need" >/dev/null 2>&1 || continue
+    declare -n argv="saver_$entry"
+    cmd=("${argv[@]}")
     if [ -n "$FUN_SECONDS" ]; then secs=$FUN_SECONDS
     else
-      jit=0; [ "${FUN_JITTER:-0}" = 1 ] && (( MINUTES >= 10 )) && jit=$((RANDOM%601-300))
-      secs=$(( MINUTES*60 + jit ))
+      jit=0; [ "${FUN_JITTER:-0}" = 1 ] && (( base_seconds >= 600 )) && jit=$((RANDOM%601-300))
+      secs=$(( base_seconds + jit ))
     fi
     (( secs < 5 )) && secs=5
-    cmd=${cmd//SECS/$secs}
+    if [[ ${cmd[0]} == "$SELF" && ${cmd[1]} == --sl ]]; then cmd+=("$secs"); fi
 
     clear; printf '\e[?25l'
     start=$SECONDS
     # background + wait so signals are handled at once; <&0 keeps the terminal as stdin
-    timeout --foreground -k 3 "$secs" nice -n 10 bash -c "$cmd" <&0 &
+    timeout --foreground -k 3 "$secs" nice -n 10 "${cmd[@]}" <&0 &
     child=$!
     wait "$child"; rc=$?
     child=""
     cleanup
 
     # 0 = quit normally, 124 = ran its full time, 130/143 = interrupted; anything else is a failure
-    case "$rc" in 0|124|130|143) ;; *) log "saver failed rc=$rc: $cmd" ;; esac
+    case "$rc" in 0|124|130|143) ;; *) log "saver failed rc=$rc: ${cmd[*]}" ;; esac
     if (( SECONDS-start < 5 )); then fails=$((fails+1)); sleep 1; else fails=0; fi
     if (( fails >= ${#SAVERS[@]} )); then
       echo "fun: nothing seems to be running - check the packages are installed. See $LOG"

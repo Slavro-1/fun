@@ -28,9 +28,9 @@ def validate(data, active=None):
         value = result[key]
         if type(value) not in (int, float) or not 1 <= value <= 1440:
             raise ValueError(f'{key} must be between 1 and 1440')
-    if result['quality'] not in QUALITY:
+    if not isinstance(result['quality'], str) or result['quality'] not in QUALITY:
         raise ValueError('invalid quality')
-    if result['order'] not in ORDER:
+    if not isinstance(result['order'], str) or result['order'] not in ORDER:
         raise ValueError('invalid order')
     for key in ('idle_enabled', 'charging_only'):
         if type(result[key]) is not bool:
@@ -46,21 +46,31 @@ def validate(data, active=None):
 
 
 def load(active=None):
+    result = dict(DEFAULTS, scenes=[])
     try:
-        if not FILE.exists():
-            return DEFAULTS.copy()
         with FILE.open('rb') as stream:
-            data = validate(tomllib.load(stream))
-        data['scenes'] = [name for name in data['scenes'] if name not in RETIRED_SCENES]
-        if active is not None:
-            if data['scenes'] and not set(data['scenes']) <= set(active):
-                raise ValueError('scenes contains an inactive name')
-            if not data['scenes']:
-                data['scenes'] = list(active)
-        return data
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+            data = tomllib.load(stream)
+    except FileNotFoundError:
+        return result
+    except (OSError, ValueError, RecursionError) as exc:
         print(f'fun: ignoring invalid settings ({exc})', file=sys.stderr)
-        return DEFAULTS.copy()
+        return result
+    for key, value in data.items():
+        try:
+            validate({key: value})
+            if key == 'scenes':
+                value = [s for s in value if s not in RETIRED_SCENES]
+                if active is not None:
+                    inactive = [s for s in value if s not in active]
+                    if inactive:
+                        print(f'fun: ignoring inactive scenes: {inactive!r}', file=sys.stderr)
+                    value = [s for s in value if s in active]
+                if not value:
+                    raise ValueError('no active scenes remain')
+            result[key] = value
+        except ValueError as exc:
+            print(f'fun: ignoring setting {key!r} ({exc}); using default', file=sys.stderr)
+    return result
 
 
 def save(data, active):

@@ -1,0 +1,32 @@
+name: Verify fun
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check Bash syntax
+        run: |
+          for script in fun install.sh uninstall.sh tools/install-deps.sh; do
+            bash -n "$script" || exit 1
+          done
+      - name: Compile Python
+        run: /usr/bin/python3 -m py_compile *.py fun-config fun-idle tools/*.py
+      - name: Run unit and integration tests
+        run: /usr/bin/python3 -m unittest discover -s tools -p 'test_*.py'
+      - name: Exercise every active scene
+        run: /usr/bin/python3 -I extras.py --selftest
+      - name: Exercise renderer transports, resize, fallback and cleanup
+        run: |
+          /usr/bin/python3 tools/ptygfx.py extras.py koi --jobs 1 --transport shm --mode all --fallbacks
+          /usr/bin/python3 tools/ptygfx.py extras.py koi --jobs 1 --transport zlib --mode crash

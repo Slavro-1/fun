@@ -47,13 +47,17 @@ class LoginTests(unittest.TestCase):
         (src / 'tools').mkdir()
         # Package prompting and the renderer have independent suites.
         (src / 'tools/install-deps.sh').write_text('installer_distro() { :; }; check_dependencies() { :; }')
+        helper = (ROOT / 'tools/install_files.py').read_text().replace('/usr/local', prefix)
+        (src / 'tools/install_files.py').write_text(helper)
         (src / 'tools/snap.py').touch()
         (src / 'extras.py').write_text('print("fixture scene check passed")')
-        script(self.bin / 'sudo', 'case "$1" in install|cp|rm|rmdir) exec "$@";; *) exit 99;; esac')
+        script(self.bin / 'sudo', '[ "$1" = /usr/bin/python3 ] || exit 99; exec "$@"')
         script(self.bin / 'systemctl', 'exit 1')
         legacy = self.root / '.config/autostart/fun-idle.desktop'
         legacy.parent.mkdir(parents=True)
-        legacy.write_text(f'[Desktop Entry]\nExec={prefix}/bin/fun-idle\n')
+        legacy.write_text('[Desktop Entry]\nType=Application\nName=fun idle screensaver\n'
+                          'Comment=Start the fun terminal screensavers using saved idle settings\n'
+                          f'Exec={prefix}/bin/fun-idle\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n')
         entry = self.root / 'config/autostart/fun-idle.desktop'
         settings = self.cfg.read_bytes()
         self.run_ok(src / 'install.sh')

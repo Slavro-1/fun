@@ -1,6 +1,6 @@
 # fun
 
-Little worlds for your Linux terminal. Pick a scene, or let `fun` wander through all 41 of them.
+Little worlds for your Linux terminal. Pick a scene, or let `fun` wander through the active scenes.
 
 ![Animated koi swimming among lily pads in fun](assets/motion/koi.gif)
 
@@ -17,6 +17,8 @@ cd fun
 The installer lists which dependencies are present and which are missing. On Debian, Ubuntu, Pop!_OS, Fedora, and Arch Linux, it shows the package command and asks for your permission before running it. Enter `y` to approve or press **Enter** to skip a prompt. It uses `sudo` for approved package commands and to copy the program files into `/usr/local`, so you may be asked for your password.
 
 The full installation needs system Python 3.11 or newer and GTK4 with PyGObject. If you skip a required package or the import still fails, setup stops before copying program files. Pillow adds thumbnails in the settings window, and kitty provides the graphics mode. You can skip either recommendation and finish setup.
+
+Before replacing any program or desktop entry, setup stages files and checks both destinations. If an older installation has no program ownership manifest, setup lists each existing program path. Type `ADOPT` only if **every listed file** belongs to your old fun installation. Press Enter to cancel. Move a conflicting file aside yourself if you want to keep it at a different path. Changed files from a tracked installation and unrecognized desktop entries stop the upgrade. Replaced versions get individual `.bak-*` copies.
 
 After setup, start the screensaver:
 
@@ -57,19 +59,22 @@ More motion, straight from the renderer:
 
 Run `fun-config` to choose scenes, rotation order, quality, and idle behavior. It saves your choices for the next launch.
 
-<p align="center"><img src="assets/fun-config.png" alt="The real fun-config GTK4 settings window with the scene list populated" width="700"></p>
+<p align="center"><img src="assets/fun-config.png" alt="The fun-config GTK4 settings window with scene previews and the Check idle activation button" width="700"></p>
 
 Useful shortcuts:
 
 ```bash
 fun --scene koi       # stay with one scene; press q or Ctrl+C to leave
-fun --list            # see all built-in scenes
+fun --list            # see all active renderer scenes
+fun --order sequential --scenes koi,silk  # rotate just these two
 fun --quality medium  # choose low, medium, high, or ultra
 ```
 
+With factory settings, rotation includes the active renderer scenes, the classic launcher effects and available external savers such as `cmatrix`. Saving a scene selection in `fun-config` or passing `--scenes` limits rotation to active renderer names. Sequential selection follows the order in `fun --list`. Random order shuffles each cycle. Command-line selections override `FUN_SCENES`, which overrides saved choices. Manual playback leaves the desktop’s locking, sleep and display-power settings under desktop control.
+
 ## Automatic idle activation
 
-Enable **Activate on idle** in `fun-config`, set the delay and charging preference, then **Save / Apply**. The factory idle delay is **13 minutes**. A saved five-minute delay means five minutes. `FUN_IDLE_MIN`, `FUN_IDLE_ENABLED` and `FUN_IDLE_CHARGING_ONLY` override saved values in the watcher's environment. The separate scene rotation interval defaults to ten minutes. The existing `FUN_IDLE_NO_AC` and `FUN_IDLE_NO_LID` power overrides still apply. Automatic idle activation always honors inhibitors, including when the old `FUN_IDLE_NO_INHIBIT` variable is present.
+**Activate on idle** and **Only while charging** are enabled by default. The factory idle delay is **13 minutes**. To change either preference or the delay, open `fun-config` and choose **Save / Apply**. A video player, presentation or another application holding a legitimate idle inhibitor can keep the screensaver from starting. Use **Check idle activation** for the watcher’s view of your session. `FUN_IDLE_MIN`, `FUN_IDLE_ENABLED` and `FUN_IDLE_CHARGING_ONLY` override saved values in the watcher's environment. The separate scene rotation interval defaults to ten minutes. The existing `FUN_IDLE_NO_AC` and `FUN_IDLE_NO_LID` power overrides still apply. Automatic idle activation always honors inhibitors, including when the old `FUN_IDLE_NO_INHIBIT` variable is present.
 
 After installing or upgrading, **log out and back in**. The installer updates one per-user XDG autostart entry. The desktop starts the enabled watcher in the graphical login environment. On desktops with an active systemd graphical-session target, that entry starts a transient user service tied to logout, with bounded restart attempts. Other XDG-autostart desktops run the watcher directly. Saving a disabled setting stops it. Enabling it in the GUI starts it again. A bare compositor needs an XDG autostart runner to launch desktop entries.
 
@@ -134,7 +139,7 @@ On other distributions, install system Python 3.11 or newer, PyGObject for that 
 
 ## Uninstall
 
-From the downloaded project folder, run `./uninstall.sh` (or `bash uninstall.sh` from a ZIP). This removes installed program files and desktop entries. It keeps saved settings, logs, and timestamped backups. System packages are managed separately by your distribution's package manager.
+From the downloaded project folder, run `./uninstall.sh` (or `bash uninstall.sh` from a ZIP). The uninstaller checks separate system and per-user manifests. It removes files whose recorded device, inode, owner, mode and SHA-256 still match. It reports modified or unowned files and keeps saved settings, logs and backups. A missing manifest leaves files in its scope in place. To migrate a legacy installation, run the new installer first and review its adoption prompt. A malformed manifest stops the operation for inspection. System packages are managed separately by your distribution's package manager.
 
 ## License
 
