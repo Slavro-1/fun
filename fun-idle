@@ -1,0 +1,451 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+fun-idle - start the `fun` screensavers when the laptop has been idle.
+
+Starts a fullscreen terminal running `fun` only when ALL of these hold:
+  * the lid is open
+  * the charger is plugged in
+  * there has been no keyboard / mouse / touchpad activity for IDLE_MIN minutes (13)
+  * nothing else is inhibiting idle (video playback, presentations)
+and stops it again the moment you touch anything, close the lid or unplug.
+
+    fun-idle                run the watcher (normally started at login)
+    fun-idle --diagnose     show which idle-detection backend works here
+    fun-idle --now          start the screensaver immediately (test the launch)
+    fun-idle --status       show lid / AC / idle state once and exit
+
+Environment: FUN_IDLE_MIN (13)   FUN_IDLE_NO_AC=1 (ignore charger)
+             FUN_IDLE_NO_LID=1 (ignore lid)   FUN_IDLE_NO_INHIBIT=1
+             FUN_TERMINAL (override the launch command)
+"""
+import glob
+import importlib.util
+import os
+import select
+import shlex
+import signal
+import struct
+import subprocess
+import sys
+import time
+
+_settings_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'fun_settings.py')
+if not os.path.isfile(_settings_path):
+    _settings_path = '/usr/local/lib/fun/fun_settings.py'
+if os.path.isfile(_settings_path):
+    _spec = importlib.util.spec_from_file_location('fun_settings', _settings_path)
+    _settings = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_settings)
+    _config = _settings.load()
+else:
+    _config = {'idle_minutes': 13, 'idle_enabled': True, 'charging_only': True}
+IDLE_MIN = float(os.environ.get("FUN_IDLE_MIN", _config['idle_minutes']))
+IDLE_ENABLED = os.environ.get('FUN_IDLE_ENABLED', str(int(_config['idle_enabled']))) != '0'
+CHARGING_ONLY = os.environ.get('FUN_IDLE_CHARGING_ONLY', str(int(_config['charging_only']))) != '0'
+_config_stamp = None
+
+
+def refresh_settings():
+    """Pick up GUI changes while the login watcher is already running."""
+    global _config_stamp, IDLE_MIN, IDLE_ENABLED, CHARGING_ONLY
+    if not os.path.isfile(_settings_path):
+        return
+    try:
+        stamp = _settings.FILE.stat().st_mtime_ns if _settings.FILE.exists() else 0
+    except OSError:
+        return
+    if stamp == _config_stamp:
+        return
+    _config_stamp = stamp
+    data = _settings.load()
+    IDLE_MIN = float(os.environ.get('FUN_IDLE_MIN', data['idle_minutes']))
+    IDLE_ENABLED = os.environ.get('FUN_IDLE_ENABLED', str(int(data['idle_enabled']))) != '0'
+    CHARGING_ONLY = os.environ.get('FUN_IDLE_CHARGING_ONLY', str(int(data['charging_only']))) != '0'
+POLL = 5.0
+GRACE = 3.0                      # ignore input for this long after launch
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "fun")
+LOGF = os.path.join(CACHE, "idle.log")
+FUN = os.environ.get("FUN_BIN", os.path.join(os.path.dirname(os.path.realpath(__file__)), "fun"))
+EV = struct.Struct("llHHi") if struct.calcsize("l") == 8 else struct.Struct("iiHHi")
+
+
+def log(msg):
+    line = "%s %s" % (time.strftime("%F %T"), msg)
+    try:
+        os.makedirs(CACHE, exist_ok=True)
+        if os.path.exists(LOGF) and os.path.getsize(LOGF) > 200000:
+            os.replace(LOGF, LOGF + ".1")
+        with open(LOGF, "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+    if sys.stderr.isatty():
+        print(line, file=sys.stderr)
+
+
+# ------------------------------------------------------------------ conditions
+def lid_open():
+    if os.environ.get("FUN_IDLE_NO_LID"):
+        return True
+    for p in glob.glob("/proc/acpi/button/lid/*/state"):
+        try:
+            return "closed" not in open(p).read()
+        except OSError:
+            pass
+    return True                                   # no lid switch found: assume open
+
+
+def on_ac():
+    if os.environ.get("FUN_IDLE_NO_AC") or not CHARGING_ONLY:
+        return True
+    seen = False
+    for d in glob.glob("/sys/class/power_supply/*"):
+        try:
+            typ = open(d + "/type").read().strip()
+            if typ in ("Mains", "USB_PD", "USB_C"):
+                seen = True
+                if open(d + "/online").read().strip() == "1":
+                    return True
+        except OSError:
+            pass
+    return not seen                               # desktop / no adapter info: assume plugged
+
+
+def foreign_inhibitor():
+    """True if another program (video player, browser, slides) is blocking idle."""
+    if os.environ.get("FUN_IDLE_NO_INHIBIT"):
+        return False
+    try:
+        out = subprocess.run(["systemd-inhibit", "--list", "--no-legend", "--no-pager"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for ln in out.splitlines():
+        low = ln.lower()
+        if "screensavers running" in low or low.startswith("fun ") or "firefox" in low:
+            continue                                   # that is us
+        cols = ln.split()
+        if "block" in cols and any(c.split(":")[0] == "idle" or "idle" in c.split(":") for c in cols):
+            return True
+    return False
+
+
+# --------------------------------------------------------------- idle backends
+class Evdev:
+    name = "evdev (/dev/input)"
+
+    def __init__(self):
+        self.fds = {}
+        self.last = time.monotonic()
+        self.scan_at = 0.0
+
+    def _devices(self):
+        try:
+            txt = open("/proc/bus/input/devices").read()
+        except OSError:
+            return []
+        out = []
+        for blk in txt.split("\n\n"):
+            hs = ""
+            for ln in blk.splitlines():
+                if ln.startswith("H: Handlers="):
+                    hs = ln
+            if ("kbd" in hs or "mouse" in hs) and "Lid" not in blk and "Power Button" not in blk:
+                for tok in hs.split():
+                    if tok.startswith("event"):
+                        out.append("/dev/input/" + tok)
+        return out
+
+    def ok(self):
+        self.rescan()
+        return bool(self.fds)
+
+    def rescan(self):
+        now = time.monotonic()
+        if now < self.scan_at:
+            return
+        self.scan_at = now + 60
+        want = set(self._devices())
+        have = set(self.fds.values())
+        for p in want - have:
+            try:
+                fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK)
+                self.fds[fd] = p
+            except OSError:
+                pass
+        for fd, p in list(self.fds.items()):
+            if p not in want:
+                os.close(fd)
+                del self.fds[fd]
+
+    def pump(self, timeout):
+        """Wait up to timeout s, record activity. Returns True if there was activity."""
+        self.rescan()
+        if not self.fds:
+            time.sleep(timeout)
+            return False
+        active = False
+        try:
+            r, _, _ = select.select(list(self.fds), [], [], timeout)
+        except (OSError, ValueError):
+            return False
+        for fd in r:
+            try:
+                data = os.read(fd, EV.size * 64)
+            except BlockingIOError:
+                continue
+            except OSError:
+                self.fds.pop(fd, None)
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                continue
+            for off in range(0, len(data) - EV.size + 1, EV.size):
+                typ = EV.unpack_from(data, off)[2]
+                if typ in (1, 2, 3):                       # key / rel / abs
+                    active = True
+        if active:
+            self.last = time.monotonic()
+        return active
+
+    def idle(self):
+        return time.monotonic() - self.last
+
+
+class Cmd:
+    """Idle time from an external program (seconds), for desktops without evdev access."""
+
+    def __init__(self, name, fn):
+        self.name = name
+        self.fn = fn
+
+    def ok(self):
+        try:
+            return self.fn() is not None
+        except Exception:
+            return False
+
+    def idle(self):
+        try:
+            v = self.fn()
+            return v if v is not None else 0.0
+        except Exception:
+            return 0.0
+
+    def pump(self, timeout):
+        before = self.idle()
+        time.sleep(timeout)
+        return self.idle() < before and self.idle() < timeout + 1
+
+
+def _run(cmd):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout.strip()
+
+
+def _xprintidle():
+    return int(_run(["xprintidle"])) / 1000.0
+
+
+def _mutter():
+    o = _run(["gdbus", "call", "--session", "--dest", "org.gnome.Mutter.IdleMonitor",
+              "--object-path", "/org/gnome/Mutter/IdleMonitor/Core",
+              "--method", "org.gnome.Mutter.IdleMonitor.GetIdletime"])
+    return int(o.strip("(),uint64 ")) / 1000.0
+
+
+def _logind():
+    sid = os.environ.get("XDG_SESSION_ID") or _run(["loginctl", "show-user", str(os.getuid()), "-p", "Display", "--value"])
+    o = _run(["loginctl", "show-session", sid, "-p", "IdleHint", "-p", "IdleSinceHintMonotonic"])
+    kv = dict(l.split("=", 1) for l in o.splitlines() if "=" in l)
+    if kv.get("IdleHint") == "yes":
+        since = int(kv.get("IdleSinceHintMonotonic", "0")) / 1e6
+        return max(0.0, time.clock_gettime(time.CLOCK_MONOTONIC) - since)
+    if "IdleHint" in kv:
+        return 0.0
+    return None
+
+
+def _file_idle():
+    return float(open(os.environ["FUN_IDLE_FILE"]).read().strip())
+
+
+def pick_backend(verbose=False):
+    if os.environ.get("FUN_IDLE_FILE"):                # test hook: idle seconds read from a file
+        return Cmd("test file backend", _file_idle)
+    cands = [Evdev(), Cmd("GNOME Mutter idle monitor", _mutter), Cmd("xprintidle (X11)", _xprintidle),
+             Cmd("systemd-logind IdleHint", _logind)]
+    for c in cands:
+        good = c.ok()
+        if verbose:
+            print("  %-28s %s" % (c.name, "works" if good else "not available"))
+        if good:
+            return c
+    return None
+
+
+# ---------------------------------------------------------------- environment
+def fix_session_env():
+    """Make sure a service started outside the graphical session can still open windows."""
+    uid = os.getuid()
+    rt = os.environ.setdefault("XDG_RUNTIME_DIR", "/run/user/%d" % uid)
+    if not os.environ.get("WAYLAND_DISPLAY"):
+        socks = sorted(p for p in glob.glob(rt + "/wayland-*") if not p.endswith(".lock"))
+        if socks:
+            os.environ["WAYLAND_DISPLAY"] = os.path.basename(socks[0])
+    if not os.environ.get("DISPLAY") and os.path.exists("/tmp/.X11-unix/X0"):
+        os.environ["DISPLAY"] = ":0"
+
+
+def launch_cmd():
+    custom = os.environ.get("FUN_TERMINAL")
+    if custom:
+        return shlex.split(custom)
+    return ["kitty", "--start-as=fullscreen", "--class=fun-screensaver", "--title=fun",
+            "-o", "confirm_os_window_close=0", "-o", "mouse_hide_wait=1", "-o", "window_padding_width=0",
+            "-o", "remember_window_size=no", "-o", "cursor_blink_interval=0", "-o", "background=#000000",
+            "-o", "background_opacity=1", "-o", "enable_audio_bell=no", "-o", "allow_remote_control=no",
+            "-o", "shell_integration=disabled", FUN]
+
+
+def start_saver():
+    fix_session_env()
+    cmd = launch_cmd()
+    log("launching: " + " ".join(shlex.quote(c) for c in cmd))
+    return subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=open(os.path.join(CACHE, "saver.err"), "a") if os.path.isdir(CACHE) else subprocess.DEVNULL,
+                            start_new_session=True)
+
+
+def stop_saver(proc):
+    if proc.poll() is not None:
+        return
+    for sig, wait in ((signal.SIGTERM, 3.0), (signal.SIGKILL, 2.0)):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        t = time.monotonic() + wait
+        while time.monotonic() < t:
+            if proc.poll() is not None:
+                return
+            time.sleep(0.1)
+    subprocess.run(["pkill", "-f", FUN], capture_output=True)
+
+
+# ---------------------------------------------------------------------- modes
+def status():
+    refresh_settings()
+    be = pick_backend()
+    print("lid open     :", lid_open())
+    print("on charger   :", on_ac())
+    print("other inhibit:", foreign_inhibitor())
+    print("backend      :", be.name if be else "NONE")
+    if be:
+        be.pump(0.2)
+        print("idle seconds :", int(be.idle()))
+    return 0
+
+
+def diagnose():
+    refresh_settings()
+    print("fun-idle diagnose  (idle threshold: %g min)" % IDLE_MIN)
+    print("lid open     :", lid_open(), "  files:", glob.glob("/proc/acpi/button/lid/*/state") or "none")
+    print("on charger   :", on_ac(), "  supplies:", [os.path.basename(p) for p in glob.glob("/sys/class/power_supply/*")])
+    print("session      :", {k: os.environ.get(k) for k in ("XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "WAYLAND_DISPLAY", "DISPLAY")})
+    print("idle backends:")
+    be = pick_backend(verbose=True)
+    ev = Evdev()
+    devs = ev._devices()
+    print("input devices:", devs or "none found")
+    if devs and not ev.ok():
+        print("  -> cannot open /dev/input/event*: run  sudo usermod -aG input $USER  then log out and in again")
+    print("chosen       :", be.name if be else "NONE (screensaver would never start)")
+    return 0 if be else 1
+
+
+def watch():
+    stop = []
+    signal.signal(signal.SIGTERM, lambda *a: stop.append(1))
+    signal.signal(signal.SIGINT, lambda *a: stop.append(1))
+    be = None
+    proc = None
+    started = 0.0
+    last_wait_log = 0.0
+    log("fun-idle started, threshold %g min" % IDLE_MIN)
+    while not stop:
+        refresh_settings()
+        thresh = IDLE_MIN * 60.0
+        if not IDLE_ENABLED:
+            if proc is not None:
+                stop_saver(proc)
+                proc = None
+            time.sleep(POLL)
+            continue
+        if be is None:
+            be = pick_backend()
+            if be is None:
+                log("no idle-detection backend works; retrying in 60 s (run: fun-idle --diagnose)")
+                time.sleep(60)
+                continue
+            log("idle backend: " + be.name)
+        active = be.pump(POLL if proc is None else 0.5)
+        now = time.monotonic()
+        if proc is not None:
+            gone = proc.poll() is not None
+            reason = None
+            if gone:
+                reason = "saver exited"
+            elif now - started > GRACE and (active or (not isinstance(be, Evdev) and be.idle() < 2)):
+                reason = "user activity"
+            elif not lid_open():
+                reason = "lid closed"
+            elif not on_ac():
+                reason = "charger unplugged"
+            if reason:
+                log("stopping saver: " + reason)
+                stop_saver(proc)
+                proc = None
+                if isinstance(be, Evdev):
+                    be.last = time.monotonic()           # require a full idle period again
+            continue
+        if be.idle() >= thresh:
+            if lid_open() and on_ac() and not foreign_inhibitor():
+                proc = start_saver()
+                started = time.monotonic()
+                be.last = started
+                if isinstance(be, Evdev):
+                    be.pump(0)
+            elif now - last_wait_log > 600:
+                last_wait_log = now
+                log("idle but conditions not met (lid=%s ac=%s inhibitor=%s)" % (lid_open(), on_ac(), foreign_inhibitor()))
+                be.last = time.monotonic() - thresh + 60       # re-check in a minute
+    if proc is not None:
+        stop_saver(proc)
+    log("fun-idle stopped")
+    return 0
+
+
+def main():
+    a = sys.argv[1:]
+    if a and a[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    if a and a[0] == "--diagnose":
+        return diagnose()
+    if a and a[0] == "--status":
+        return status()
+    if a and a[0] == "--now":
+        p = start_saver()
+        print("started (pid %d); press any key in it, or Ctrl-C here, to stop" % p.pid)
+        try:
+            p.wait()
+        except KeyboardInterrupt:
+            stop_saver(p)
+        return 0
+    return watch()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,33 @@
+# Python and local test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage*
+*.log
+*.out
+*.err
+
+# Development work and generated previews
+work/
+outputs/
+previews/
+screensaver_project/
+*.bak-*
+*.bak
+
+# Local agent, credential, and editor state
+.agents/
+.codex/
+.aws/
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# Internal development notes (not required by the application)
+AGENTS.md
+GFX.md
+NEW_SCENES.md
+REFINE.md
+ORIGINAL.sha256
