@@ -86,4 +86,4 @@ From the checkout, run `./uninstall.sh`. It removes the installed programs and t
 
 ## License
 
-MIT; see [LICENSE](LICENSE). Replace the copyright-holder placeholder before publishing.
+MIT; see [LICENSE](LICENSE).
