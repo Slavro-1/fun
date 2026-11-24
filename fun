@@ -265,7 +265,7 @@ esac
 
 # ---------- keep the screen awake while running ----------
 # Block sleep/idle through systemd (re-run ourselves under the inhibitor once)
-if [ -z "$FUN_INH" ] && command -v systemd-inhibit >/dev/null 2>&1 \
+if [ -z "$FUN_IDLE_LAUNCH" ] && [ -z "$FUN_INH" ] && command -v systemd-inhibit >/dev/null 2>&1 \
    && systemd-inhibit --what=idle:sleep true >/dev/null 2>&1; then
   FUN_INH=1 exec systemd-inhibit --what=idle:sleep --who=fun --why="Screensavers running" "$SELF" "$@"
 fi
@@ -338,10 +338,12 @@ on_signal() {
   cleanup; exit 0
 }
 trap on_signal INT TERM HUP
-trap power_restore EXIT
-
-power_restore      # undo leftovers from any earlier hard-killed run
-power_off
+# A watcher-owned saver must leave desktop locking and sleep policy in force.
+if [[ -z "$FUN_IDLE_LAUNCH" ]]; then
+  trap power_restore EXIT
+  power_restore
+  power_off
+fi
 log "start minutes=$MINUTES pid=$$"
 echo "fun: starting, switching every ~${MINUTES} min. Ctrl-C to stop."; sleep 2
 fails=0

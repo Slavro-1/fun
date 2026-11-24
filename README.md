@@ -67,7 +67,36 @@ fun --list            # see all built-in scenes
 fun --quality medium  # choose low, medium, high, or ultra
 ```
 
-`fun-idle` can start a fullscreen screensaver after you step away. The installer adds a user autostart entry on first install. Run `fun-idle --diagnose` to check whether your desktop has a usable idle detector. The watcher uses kitty by default. To use another terminal, set `FUN_TERMINAL` in the watcher's desktop session environment. For example, if you have xterm, try the override with `FUN_TERMINAL='xterm -fullscreen -e /usr/local/bin/fun' fun-idle --now`.
+## Automatic idle activation
+
+Enable **Activate on idle** in `fun-config`, set the delay and charging preference, then **Save / Apply**. The factory idle delay is **13 minutes**. A saved five-minute delay means five minutes. `FUN_IDLE_MIN`, `FUN_IDLE_ENABLED` and `FUN_IDLE_CHARGING_ONLY` override saved values in the watcher's environment. The separate scene rotation interval defaults to ten minutes. The existing `FUN_IDLE_NO_AC` and `FUN_IDLE_NO_LID` power overrides still apply. Automatic idle activation always honors inhibitors, including when the old `FUN_IDLE_NO_INHIBIT` variable is present.
+
+After installing or upgrading, **log out and back in**. The installer updates one per-user XDG autostart entry. The desktop starts the enabled watcher in the graphical login environment. On desktops with an active systemd graphical-session target, that entry starts a transient user service tied to logout, with bounded restart attempts. Other XDG-autostart desktops run the watcher directly. Saving a disabled setting stops it. Enabling it in the GUI starts it again. A bare compositor needs an XDG autostart runner to launch desktop entries.
+
+| Graphical session | Idle source and requirements |
+| --- | --- |
+| Plasma Wayland, compatible wlroots compositors | Prefers the compositor's advertised `ext_idle_notifier_v1` and a single identifiable seat. Subscribes at the configured delay and listens for `idled` and `resumed`. Compositor inhibitors apply. No compiler, input-device access or optional Python binding is needed. |
+| GNOME Wayland | Uses native idle notifications if advertised, otherwise the Mutter idle counter on the session bus. |
+| Plasma and other X11 desktops | Uses an advancing `xprintidle` counter on the native X display. Install the distribution's `xprintidle` package if needed. GNOME X11 first tries Mutter. Already-readable input devices are a legacy X11 fallback after actual input is seen. |
+| Only logind hints available | Some desktops never update the hint. The watcher withholds activation until it observes both timestamped idle and active transitions. Timing then starts at the desktop's idle hint, so activation can be later than the configured delay. `--diagnose` reports an unverified hint as a limitation. |
+
+Automatic activation requires a local graphical logind session whose active and lock state can be identified, plus `loginctl` and `busctl` with JSON output. A session with ambiguous identity or unreadable required policy data is unsuitable. The watcher checks logind idle blockers, KDE PowerDevil screen policy and GNOME idle inhibition where applicable. Wayland compositors can suppress an idle event without identifying the inhibiting app. Watcher-launched screensavers leave locking and suspend under desktop control. An earlier desktop lock or suspend can therefore prevent activation. Input-device permissions do not need to change.
+
+Kitty is the default terminal. A `FUN_TERMINAL` override is the **entire foreground launch command**, including `fun`. Configure it in the desktop login environment. A command that detaches or hands the window to an existing terminal server cannot provide reliable child ownership. To test a terminal independently, run:
+
+```bash
+FUN_TERMINAL='xterm -fullscreen -e /usr/local/bin/fun' fun-idle --now
+```
+
+### Check a Debian Plasma Wayland login
+
+1. From the reviewed checkout, run `./install.sh` as your desktop user. Log out, choose **Plasma (Wayland)** and log in again.
+2. In `fun-config`, enable idle activation and save your normal delay (for example, five minutes). Open the lid and connect AC if charging-only is enabled.
+3. In a graphical terminal, run `fun-idle --diagnose`. Check for **KDE / wayland**, **Watcher: running**, the expected terminal and delay, and a native subscription. If an application is inhibiting idle, finish that activity and check again.
+4. Run `fun-idle --test` and leave keyboard, mouse and touchpad untouched. The login watcher temporarily uses ten seconds. Check that one fullscreen window appears, then move the mouse. Verify that it closes promptly and the test prints **PASS**. Ctrl+C cancels the test. It never writes settings.
+5. Run `fun-idle --status` and confirm the normal delay has returned. Leave the laptop untouched for that full interval and verify one automatic launch and dismissal again. Repeat on Pop!_OS, checking which session and backend it actually reports.
+
+`fun-idle --trace` follows timestamped login, backend, launch, dismissal and failure messages. `--now` tests the terminal and renderer only. If a watcher is missing, check for a **desktop startup invoked** line at login and the login entry in `--diagnose`. For a supervised watcher, inspect `journalctl --user -b -u 'fun-idle-*.service'`. Terminal errors are in `${XDG_CACHE_HOME:-~/.cache}/fun/saver.err`. Desktop acceptance requires a visible launch and dismissal on the machine being tested. The automated protocol, policy and lifecycle fixtures exercise those paths headlessly.
 
 ## Try it first, or download a ZIP
 
@@ -81,7 +110,7 @@ No Git? On this repository's GitHub page, choose **Code → Download ZIP**, extr
 
 **For the settings window:** GTK 4.8 or newer and PyGObject for `/usr/bin/python3`. Pillow for the same interpreter adds thumbnails. The installer probes that interpreter even if a virtual environment is active.
 
-**For automatic idle start:** An idle detector available to your session and a terminal the watcher can launch. It can use readable input devices, GNOME's Mutter service via `gdbus`, `xprintidle` on X11, or `loginctl` on compatible sessions. Extra classic terminal programs are picked up when installed.
+**For automatic idle start:** See the session requirements above. GTK is used by the settings window. The watcher uses Python's standard library and Linux session interfaces.
 
 `fun` uses kitty graphics automatically in a local kitty window. Other terminals use Unicode half-blocks. You can also force that mode with `FUN_GFX=0 fun --scene koi`. The project was developed and tested on Pop!_OS 24.04 with KDE Plasma and kitty.
 

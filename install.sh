@@ -3,7 +3,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PYTHON=/usr/bin/python3
-python_files=(extras.py fun-idle fun-config fun_settings.py tools/snap.py)
+python_files=(extras.py fun-idle fun-config fun_settings.py fun_wayland.py fun_runtime.py fun_session.py tools/snap.py)
 for file in "${python_files[@]}" fun tools/install-deps.sh; do
   if [[ ! -f "$HERE/$file" ]]; then
     printf 'Missing %s. Run the installer from a complete checkout or extracted ZIP.\n' "$HERE/$file" >&2
@@ -53,7 +53,7 @@ backed_up=false
 for dir in /usr/local/lib/fun /usr/local/bin; do
   if [[ ! -d "$dir" ]]; then "${admin[@]}" install -d "$dir"; fi
 done
-for file in /usr/local/lib/fun/extras.py /usr/local/lib/fun/fun_settings.py /usr/local/lib/fun/snap.py /usr/local/bin/fun /usr/local/bin/fun-idle /usr/local/bin/fun-config; do
+for file in /usr/local/lib/fun/extras.py /usr/local/lib/fun/fun_settings.py /usr/local/lib/fun/snap.py /usr/local/lib/fun/{fun_wayland,fun_runtime,fun_session}.py /usr/local/bin/fun /usr/local/bin/fun-idle /usr/local/bin/fun-config; do
   if [[ -f "$file" || -L "$file" ]]; then
     "${admin[@]}" cp -a -- "$file" "$file.bak-$stamp"
     backed_up=true
@@ -61,6 +61,9 @@ for file in /usr/local/lib/fun/extras.py /usr/local/lib/fun/fun_settings.py /usr
 done
 "${admin[@]}" install -m 755 "$HERE/extras.py" /usr/local/lib/fun/extras.py
 "${admin[@]}" install -m 644 "$HERE/fun_settings.py" /usr/local/lib/fun/fun_settings.py
+for module in fun_wayland.py fun_session.py fun_runtime.py; do
+  "${admin[@]}" install -m 644 "$HERE/$module" "/usr/local/lib/fun/$module"
+done
 "${admin[@]}" install -m 644 "$HERE/tools/snap.py" /usr/local/lib/fun/snap.py
 "${admin[@]}" install -m 755 "$HERE/fun"       /usr/local/bin/fun
 "${admin[@]}" install -m 755 "$HERE/fun-idle"  /usr/local/bin/fun-idle
@@ -69,7 +72,9 @@ if $backed_up; then
   printf 'Previous program files were saved alongside the new files with suffix .bak-%s.\n' "$stamp"
 fi
 
-mkdir -p "$HOME/.config/autostart" "$HOME/.cache/fun" "$HOME/.local/share/applications"
+autodir="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+appdir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+mkdir -p "$autodir" "$appdir"
 create_desktop_entry() {
   local file=$1 temp
   if [[ -e "$file" || -L "$file" ]]; then return 0; fi
@@ -81,16 +86,34 @@ create_desktop_entry() {
   rm -f -- "$temp"
 }
 
-create_desktop_entry "$HOME/.config/autostart/fun-idle.desktop" <<'DESK'
+entry="$autodir/fun-idle.desktop"
+legacy="$HOME/.config/autostart/fun-idle.desktop"
+is_fun_entry() {
+  [[ -f "$1" && ! -L "$1" ]] && grep -Eq '^Exec=/usr/local/bin/fun-idle( --autostart)?$' "$1"
+}
+if [[ -e "$entry" || -L "$entry" ]] && ! is_fun_entry "$entry"; then
+  printf 'Cannot replace a custom startup file at %s. Existing file preserved.\n' "$entry" >&2
+  exit 1
+fi
+temp=$(mktemp "$autodir/.fun-entry.XXXXXXXX")
+trap 'rm -f -- "$temp"' EXIT
+cat > "$temp" <<'DESK'
 [Desktop Entry]
 Type=Application
 Name=fun idle screensaver
 Comment=Start the fun terminal screensavers using saved idle settings
-Exec=/usr/local/bin/fun-idle
-X-GNOME-Autostart-enabled=true
+Exec=/usr/local/bin/fun-idle --autostart
+TryExec=/usr/local/bin/fun-idle
+Terminal=false
 NoDisplay=true
 DESK
-create_desktop_entry "$HOME/.local/share/applications/fun-config.desktop" <<'DESK'
+if ! cmp -s "$entry" "$temp"; then mv -T -- "$temp" "$entry"; fi
+if [[ "$legacy" != "$entry" && ! "$legacy" -ef "$entry" ]] && is_fun_entry "$legacy"; then
+  rm -- "$legacy"
+fi
+grep -Fxq 'Exec=/usr/local/bin/fun-idle --autostart' "$entry"
+test -x /usr/local/bin/fun-idle
+create_desktop_entry "$appdir/fun-config.desktop" <<'DESK'
 [Desktop Entry]
 Type=Application
 Name=fun settings
@@ -103,4 +126,5 @@ DESK
 
 printf '\n%s\n' 'fun installed. Run fun to start and press Ctrl+C to exit.' \
   'Run fun-config from your graphical desktop to choose scenes and settings.' \
+  'Log out and back in to load the updated watcher. It starts when idle activation is enabled.' \
   'Run fun-idle --diagnose to check idle detection for your session.'

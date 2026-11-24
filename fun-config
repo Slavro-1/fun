@@ -236,6 +236,28 @@ def main():
         charging = Gtk.Switch(active=saved['charging_only'])
         charging.connect('notify::active', changed)
         field('Only while charging', charging, 5)
+        diagnostic = Gtk.Label(xalign=0, wrap=True, selectable=True)
+        diagnostic_button = Gtk.Button(label='Check idle activation')
+        field('Idle diagnostics', diagnostic_button, 6)
+        report_view = Gtk.ScrolledWindow(max_content_height=160, propagate_natural_height=True)
+        report_view.set_child(diagnostic)
+        root.append(report_view)
+        watcher = str(HERE / 'fun-idle')
+
+        def check_idle(*_, details=True):
+            def probe():
+                try:
+                    result = subprocess.run([watcher, '--diagnose'], capture_output=True, text=True, timeout=30)
+                    message = (result.stdout.strip() or result.stderr.strip()) if details else ''
+                    if result.returncode:
+                        message = ('Idle activation needs attention. ' + (message or 'Choose Check idle activation for details.'))
+                except (OSError, subprocess.SubprocessError) as exc:
+                    message = str(exc)
+                GLib.idle_add(diagnostic.set_text, message)
+            threading.Thread(target=probe, daemon=True).start()
+
+        diagnostic_button.connect('clicked', check_idle)
+        check_idle(details=False)
         root.append(error)
         footer = Gtk.Box(spacing=8)
         root.append(footer)
@@ -262,6 +284,8 @@ def main():
             try:
                 data = current()
                 settings.save(data, names)
+                if data['idle_enabled']:
+                    subprocess.Popen([watcher, '--autostart'], start_new_session=True)
                 baseline[0] = data
                 changed()
             except (OSError, ValueError) as exc:
