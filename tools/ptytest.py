@@ -45,12 +45,16 @@ def run(name, how, secs=3.0, size=(49,118)):
         if p: status = st; break
         pump(0.1)
     if status is None:
-        os.kill(pid, signal.SIGKILL); os.wait4(pid, 0); return dict(name=name, ok=False, why='did not exit within 4 s of ' + how)
+        os.kill(pid, signal.SIGKILL)
+        os.wait4(pid, 0)
+        os.close(fd)
+        return dict(name=name, ok=False, why='did not exit within 4 s of ' + how)
     pump(0.1)
+    os.close(fd)
     code = os.waitstatus_to_exitcode(status)
     tail = buf[-80:]
     leave = b'\x1b[?25h' in tail and b'\x1b[?1049l' in tail and b'\x1b[?7h' in tail
-    cpu = (ru.ru_utime + ru.ru_stime) / (mid and secs) if ru else 0
+    cpu = (ru.ru_utime + ru.ru_stime) / secs if ru else 0
     return dict(name=name, ok=(code == 0 and leave), code=code, leave=leave, cpu=cpu, kbs=mid / secs / 1024.0, tail=tail)
 
 bad = 0
@@ -60,3 +64,4 @@ for n in names:
     if not r['ok']: bad += 1
     print('%-14s %-6s %5s %7.1f%% %8.1f %s' % (n, 'OK' if r['ok'] else 'FAIL', r.get('code'), r.get('cpu', 0) * 100, r.get('kbs', 0), r.get('why', '') or ('' if r['ok'] else repr(r.get('tail')))))
 print('FAILURES:', bad)
+sys.exit(bool(bad))

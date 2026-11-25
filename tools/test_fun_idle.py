@@ -141,10 +141,23 @@ class SessionTests(unittest.TestCase):
         with patch.dict(os.environ, {'XDG_CURRENT_DESKTOP': 'KDE'}), patch.object(session, 'bus') as bus:
             bus.side_effect = [[], False, False]
             self.assertEqual(session.blockers(props), [])
-            bus.side_effect = [[], True, None, True]
+            bus.side_effect = [[], True, None, [], True]
             self.assertEqual(session.blockers(props), ['KDE PowerDevil screen inhibition', 'desktop screen locker active'])
             bus.side_effect = [None, None, None]
-            self.assertEqual(len(session.blockers(dict(props, LockedHint='yes'))), 3)
+            self.assertEqual(len(session.blockers(dict(props, LockedHint='yes'))), 4)
+
+    def test_kde_inhibition_labels_are_diagnostic_only(self):
+        props = dict(Active='yes', LockedHint='no', State='active')
+        cases = [
+            ([{'data': [['sleep', 'backup', 'busy'], ['idle', 'player', 'movie']]}],
+             ' (screen requests: player — movie)'),
+            ([None, [['AC Screen Lock', 'reason\x1b\n']]], ' (active requests, all types: AC Screen Lock — reason)'),
+            ([None, None], ''),
+        ]
+        for replies, detail in cases:
+            with self.subTest(replies=replies), patch.dict(os.environ, {'XDG_CURRENT_DESKTOP': 'KDE'}), \
+                    patch.object(session, 'bus', side_effect=[[], True, *replies, False]):
+                self.assertEqual(session.blockers(props), ['KDE PowerDevil screen inhibition' + detail])
 
     def test_gnome_filters_sleep_only_inhibitor_and_names_idle_app(self):
         with patch.dict(os.environ, {'XDG_CURRENT_DESKTOP': 'GNOME'}), patch.object(session, 'bus') as bus:
@@ -353,12 +366,15 @@ class LifecycleTests(unittest.TestCase):
             idle.autostart(rt)
             run.assert_not_called()
         with patch.object(idle, 'IDLE_ENABLED', True, create=True), patch.object(session, 'output', return_value='active'), \
-                patch.object(idle.subprocess, 'run') as run, patch.dict(os.environ, {'WAYLAND_DISPLAY': 'wayland-7'}):
+                patch.object(idle.subprocess, 'run') as run, patch.dict(os.environ, {'WAYLAND_DISPLAY': 'wayland-7'}, clear=True):
             run.return_value.returncode = 0
             self.assertEqual(idle.autostart(rt), 0)
             cmd = run.call_args.args[0]
             for arg in ('PartOf=graphical-session.target', 'StartLimitBurst=3', '--setenv=WAYLAND_DISPLAY=wayland-7'):
                 self.assertIn(arg, cmd)
+            unset = next(arg for arg in cmd if arg.startswith('UnsetEnvironment='))
+            self.assertIn('XDG_CACHE_HOME', unset.partition('=')[2].split())
+            self.assertNotIn('--setenv=XDG_CACHE_HOME=', cmd)
             rt.holder.return_value = '123'
             idle.autostart(rt)
             run.assert_called_once()

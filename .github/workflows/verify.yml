@@ -17,11 +17,11 @@ jobs:
           persist-credentials: false
       - name: Check Bash syntax
         run: |
-          for script in fun install.sh uninstall.sh tools/install-deps.sh; do
+          for script in fun install.sh uninstall.sh tools/install-deps.sh scripts/final-prepush.sh; do
             bash -n "$script" || exit 1
           done
       - name: Compile Python
-        run: /usr/bin/python3 -m py_compile *.py fun-config fun-idle tools/*.py
+        run: /usr/bin/python3 -m py_compile *.py fun-config fun-idle tools/*.py scripts/*.py
       - name: Run unit and integration tests
         run: /usr/bin/python3 -m unittest discover -s tools -p 'test_*.py'
       - name: Exercise every active scene

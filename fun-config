@@ -4,6 +4,7 @@ import importlib.util
 import os
 from pathlib import Path
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -31,10 +32,10 @@ def count_status(names, enabled):
 
 def prune_retired_thumbnails(cache_root):
     """Remove only thumbnails whose scene names have been retired."""
-    if not cache_root.is_dir():
+    if cache_root.is_symlink() or not cache_root.is_dir():
         return
     for version in cache_root.iterdir():
-        if version.is_dir():
+        if re.fullmatch(r'[0-9a-f]+-[0-9a-f]+', version.name) and not version.is_symlink() and version.is_dir():
             for name in settings.RETIRED_SCENES:
                 (version / (name + '.png')).unlink(missing_ok=True)
                 (version / (name + '.tmp.png')).unlink(missing_ok=True)
@@ -142,9 +143,9 @@ def main():
         loading = [True]
 
         def current():
-            return dict(minutes=minutes.get_value_as_int(), quality=quality.get_active_id(),
+            return dict(minutes=minutes.get_value(), quality=quality.get_active_id(),
                         order=order.get_active_id(), idle_enabled=idle.get_active(),
-                        idle_minutes=idle_minutes.get_value_as_int(), charging_only=charging.get_active(),
+                        idle_minutes=idle_minutes.get_value(), charging_only=charging.get_active(),
                         scenes=[n for n in names if rows[n][0].get_active()])
 
         def changed(*_):
@@ -215,6 +216,7 @@ def main():
             grid.attach(widget, 1, r, 1, 1)
 
         minutes = Gtk.SpinButton.new_with_range(1, 1440, 1)
+        minutes.set_digits(2)
         minutes.set_value(saved['minutes']); minutes.connect('value-changed', changed)
         field('Rotation interval (minutes)', minutes, 0)
         quality = Gtk.ComboBoxText()
@@ -231,6 +233,7 @@ def main():
         idle.connect('notify::active', changed)
         field('Activate on idle', idle, 3)
         idle_minutes = Gtk.SpinButton.new_with_range(1, 1440, 1)
+        idle_minutes.set_digits(2)
         idle_minutes.set_value(saved['idle_minutes']); idle_minutes.connect('value-changed', changed)
         field('Idle delay (minutes)', idle_minutes, 4)
         charging = Gtk.Switch(active=saved['charging_only'])

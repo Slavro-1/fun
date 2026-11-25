@@ -3,6 +3,7 @@ import importlib.util
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -33,6 +34,17 @@ class CountTests(unittest.TestCase):
         output = 'aurora\nsynthwave\nkoi\n'
         with patch.object(self.gui.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, output, '')):
             self.assertEqual(self.gui.scene_names(), ['aurora', 'koi'])
+
+    def test_thumbnail_cleanup_preserves_linked_and_unrelated_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ('artwork', '1a-2b'):
+                (root / name).mkdir()
+                (root / name / 'pulsar.png').write_bytes(b'keep artwork outside version cache')
+            (root / '3c-4d').symlink_to(root / 'artwork')
+            self.gui.prune_retired_thumbnails(root)
+            self.assertTrue((root / 'artwork/pulsar.png').exists())
+            self.assertFalse((root / '1a-2b/pulsar.png').exists())
 
     def test_search_does_not_change_total_or_enabled_count(self):
         names = self.gui.scene_names()
