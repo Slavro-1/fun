@@ -383,9 +383,12 @@ def autostart(rt):
         args = ['systemd-run', '--user', '--quiet', '--collect', '--unit=' + rt.unit,
                 '-p', 'PartOf=graphical-session.target', '-p', 'Restart=on-failure',
                 '-p', 'RestartSec=5s', '-p', 'StartLimitIntervalSec=120s', '-p', 'StartLimitBurst=3']
-        args.extend('--setenv=' + k + '=' + os.getenv(k, '') for k in keys)
+        present = [k for k in keys if os.getenv(k)]
+        absent = [k for k in keys if k not in present]
+        args.extend('--setenv=' + k + '=' + os.environ[k] for k in present)
+        if absent:
+            args.extend(['-p', 'UnsetEnvironment=' + ' '.join(absent)])
         args.append(str(Path(__file__).resolve()))
-        # Empty optional variables use the same defaults as missing variables.
         try:
             if subprocess.run(args, timeout=10).returncode == 0:
                 return 0

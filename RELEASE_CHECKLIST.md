@@ -30,3 +30,21 @@ Before committing, verify both Git identities with `git var GIT_AUTHOR_IDENT`
 and `git var GIT_COMMITTER_IDENT`. Use the maintainer's GitHub-confirmed
 noreply address in repository-local configuration. Historical author metadata
 is already public, including the original release tag.
+
+## Maintainer's two-laptop branch gate
+
+Run `sudo ./scripts/final-prepush.sh` in the reviewed checkout on Pop!_OS.
+The desktop user must have a matching sudo audit login UID, trusted SSH host
+key and passwordless SSH access to Debian. Set repository-local
+`fun.verifyHost` to the Debian SSH destination once per checkout. Both
+graphical logins must be active and running the installed candidate. The
+verifier reads the root-owned installer manifest with a fixed sudo command
+on each laptop. Source tests use private exports of the exact commit.
+
+The gate checks the committed files, both installations, actual GTK windows,
+renderer rotation, signal cleanup and idle dismissal. Move the pointer on the
+specified laptop after its saver appears. An inhibitor, absent observation,
+changed setting, stale install or missing mandatory dependency stops the run.
+Installation and machine cleanup are separate maintenance operations. A green
+run asks for the exact branch and full commit on the controlling terminal
+before pushing that commit. Declining leaves the branch local.

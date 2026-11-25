@@ -764,7 +764,7 @@ class KittyGraphics:
             if self.active and self.term is not None:
                 # Finish an interrupted APC before deleting the placement on the alt screen.
                 tail = _GFX_END + _gfx_command('m=0,q=2') if self.interrupted else b''
-                self.term.write(tail + self.delete + b'\x1b[?2026l')
+                self.term.write(tail + self.delete + (b'\x1b[?2026l' if self.interrupted else b''))
         finally:
             self.active = self.interrupted = False
             if self.shm is not None:
@@ -774,7 +774,7 @@ class KittyGraphics:
 # ==================================================================== terminal
 class Terminal:
     ENTER = b'\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[0m\x1b[2J\x1b[H'
-    LEAVE = b'\x1b[0m\x1b[?2026l\x1b[?7h\x1b[?25h\x1b[?1049l'
+    LEAVE = b'\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l'
 
     def __init__(self):
         self.fd = 1
@@ -783,6 +783,7 @@ class Terminal:
         self.saved = None
         self.winch = True
         self.tty_in = False
+        self.sync_pending = False
         self.stop = False
 
     def pixels(self):
@@ -838,6 +839,8 @@ class Terminal:
     def write(self, data):
         if not data:
             return
+        if data.startswith(b'\x1b[?2026h'):
+            self.sync_pending = True
         mv = memoryview(data)
         while mv:
             try:
@@ -848,6 +851,8 @@ class Terminal:
             except OSError:
                 raise SystemExit(0)       # terminal went away
             mv = mv[n:]
+        if data.endswith(b'\x1b[?2026l'):
+            self.sync_pending = False
 
     def enter(self):
         if self.active:
@@ -871,7 +876,7 @@ class Terminal:
             return
         self.active = False
         try:
-            self.write(self.LEAVE)
+            self.write((b'\x1b[?2026l' if self.sync_pending else b'') + self.LEAVE)
         except BaseException:
             pass
         try:

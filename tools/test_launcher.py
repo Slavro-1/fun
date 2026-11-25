@@ -61,6 +61,13 @@ exit 42''')
         self.assertFalse(self.power.exists())
         return result, [json.loads(line)[7:] for line in self.log.read_text().splitlines()] if self.log.exists() else []
 
+    def test_empty_and_failed_inventory_fail_the_terminal_test(self):
+        for code in (0, 3):
+            self.engine.write_text(f'raise SystemExit({code})')
+            result, _ = self.play('--test', '1')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('inventory', result.stderr)
+
     def test_exact_selection_and_whitespace(self):
         _, commands = self.play('--scenes', 'koi')
         self.assertEqual(commands, [['python3', str(self.engine), 'koi']])

@@ -232,7 +232,22 @@ PYEOF
 }
 
 # Put the terminal back in a sane state (cursor, autowrap, alt screen, colours, echo).
-reset_term() { printf '\e[0m\e[?2026l\e[?7h\e[?25h\e[?1049l'; stty sane 2>/dev/null; }
+reset_term() {
+  # A clean renderer has finished its synchronized update. Recover partial
+  # output from a failed child or a legacy external program.
+  if [[ ${1:-1} != 0 ]]; then printf '\e[?2026l'; fi
+  printf '\e[0m\e[?7h\e[?25h\e[?1049l'
+  stty sane 2>/dev/null
+}
+
+load_active_scenes() {
+  local names
+  if ! names=$(python3 "$EXTRAS" --list) || [[ -z "$names" ]]; then
+    echo "fun: cannot load scene inventory from $EXTRAS" >&2
+    return 1
+  fi
+  mapfile -t active <<< "$names"
+}
 
 case "$1" in
   --dvd)    dvd; exit ;;
@@ -245,7 +260,7 @@ case "$1" in
   --selftest) python3 "$EXTRAS" --selftest; exit ;;
   --scene)
     [ -n "$2" ] || { echo "usage: fun --scene NAME   (fun --list shows names)"; exit 1; }
-    trap 'reset_term' EXIT
+    trap 'reset_term "$?"' EXIT
     python3 "$EXTRAS" "$2" <&0 &
     scene_pid=$!
     trap 'kill -TERM "$scene_pid" 2>/dev/null; wait "$scene_pid"; exit 130' INT TERM HUP
@@ -254,8 +269,8 @@ case "$1" in
   --test)
     secs="${2:-6}"; pass=0; bad=0; badlist=""
     trap 'reset_term; exit 130' INT TERM HUP
-    mapfile -t scenes < <(python3 "$EXTRAS" --list)
-    for s in "${scenes[@]}"; do
+    load_active_scenes || exit 1
+    for s in "${active[@]}"; do
       clear
       err=$(timeout --foreground -k 3 "$secs" python3 "$EXTRAS" "$s" 2>&1 >/dev/tty); rc=$?
       reset_term
@@ -279,9 +294,7 @@ add_saver() {
   SAVERS+=("$index")
 }
 
-scene_names=$(python3 "$EXTRAS" --list) || { echo "fun: cannot load scenes from $EXTRAS" >&2; exit 1; }
-[[ -n "$scene_names" ]] || { echo "fun: no active scenes in $EXTRAS" >&2; exit 1; }
-mapfile -t active <<< "$scene_names"
+load_active_scenes || exit 1
 requested=()
 contains_scene() {
   local wanted=$1 name

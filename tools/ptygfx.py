@@ -184,6 +184,9 @@ sys.exit(engine['main']())
             assert restored>=0
             graphics_output = peer.raw[:restored+len(RESTORE)]
         assert graphics_output.endswith(RESTORE),bytes(peer.raw[-120:])
+        if how in ('q', 'crash'):
+            # Completed frames and ordinary teardown must balance synchronized updates.
+            assert graphics_output.count(b'\x1b[?2026h') == graphics_output.count(b'\x1b[?2026l')
         if wants_gfx:
             assert not CSI.sub(b'',APC.sub(b'',graphics_output)), 'stray printable bytes in gfx stream'
             assert peer.decoder.fields is None
