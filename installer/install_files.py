@@ -14,8 +14,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = Path('/usr/local')
-SOURCES = ('fun', 'fun-idle', 'fun-config', 'extras.py', 'fun_settings.py',
-           'fun_wayland.py', 'fun_runtime.py', 'fun_session.py', 'tools/snap.py')
+# Keep the legacy install paths so existing ownership manifests remain valid.
+SOURCES = dict(line.split('\t') for line in (ROOT / 'installer/program-files.tsv').read_text().splitlines())
 STARTUP = """[Desktop Entry]
 Type=Application
 Name=fun idle screensaver
@@ -256,15 +256,15 @@ def manifest(fs, path, allowed):
 def layout(fs, system, installing):
     if system:
         targets = {}
-        for src in SOURCES:
-            binary = not src.endswith('.py')
-            path = (PREFIX / 'bin' if binary else PREFIX / 'lib/fun') / Path(src).name
+        for src, destination in SOURCES.items():
+            path = PREFIX / destination
+            executable = destination.startswith('bin/') or src == 'extras.py'
             content = None
             if installing:
                 _, content = fs.inspect(ROOT / src, read=True, limit=None)
                 if content is None:
                     raise Conflict(f'Missing source file: {src}')
-            targets[path] = (content, 0o755 if binary or src == 'extras.py' else 0o644)
+            targets[path] = (content, 0o755 if executable else 0o644)
         return PREFIX, PREFIX / 'lib/fun/ownership.json', targets, {}
     home = Path.home()
     config = Path(os.environ.get('XDG_CONFIG_HOME') or home / '.config')
@@ -396,11 +396,23 @@ def operate(action, system=False):
             commit()
 
 
+def validate_sources():
+    for name in SOURCES:
+        path = ROOT / name
+        if name in ('fun', 'fun_app/legacy_savers.sh'):
+            subprocess.run(['/bin/bash', '-n', path], check=True)
+        else:
+            compile(path.read_bytes(), str(path), 'exec')
+
+
 if __name__ == '__main__':
     try:
         action, *args = sys.argv[1:]
+        if action == 'validate' and not args:
+            validate_sources()
+            sys.exit(0)
         if action not in ('install', 'uninstall') or args not in ([], ['system']):
             raise ValueError('invalid installer arguments')
         operate(action, bool(args))
-    except (ValueError, OSError, RecursionError) as exc:
+    except (ValueError, OSError, RecursionError, SyntaxError, subprocess.CalledProcessError) as exc:
         sys.exit(f'fun setup: {exc}')

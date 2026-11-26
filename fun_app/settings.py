@@ -100,7 +100,7 @@ def save(data, active):
 def shell(scope):
     active = None
     if scope == 'launcher':
-        engine = Path(__file__).with_name('extras.py')
+        engine = Path(__file__).resolve().parents[1] / 'extras.py'
         if engine.is_file():
             try:
                 active = subprocess.run([sys.executable, str(engine), '--list'],

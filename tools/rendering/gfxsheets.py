@@ -4,11 +4,13 @@
 import argparse
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
 from gfxdecode import Commands, Decoder
-from snap import load_engine, render
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from fun_app.gui.preview import load_engine, render
 
 SIZE = 118,49
 TIMES = 2,12

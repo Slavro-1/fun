@@ -1,6 +1,6 @@
 # FUN Project — Codex Instructions
 
-Project: Python terminal screensavers, extras.py.
+Project: Python terminal screensavers, with scene code in `fun_app/scenes/`.
 Environment: Python 3.12, kitty, Pop!_OS 24.04 with KDE Plasma.
 
 ## Rules
@@ -12,7 +12,7 @@ Environment: Python 3.12, kitty, Pop!_OS 24.04 with KDE Plasma.
 - Preserve kitty graphics and half-block fallback.
 - Preserve CLI, idle watcher, and terminal cleanup.
 - No mandatory NumPy or heavy dependencies.
-- One agent editing extras.py; no parallel edits.
+- One agent editing scene implementations; no parallel edits.
 - Back up files before modifying them.
 - Stop after each approved milestone.
 
@@ -22,7 +22,7 @@ Environment: Python 3.12, kitty, Pop!_OS 24.04 with KDE Plasma.
 - Never add Codex, OpenAI, or AI attribution or co-author trailers. Never invent an email address or rewrite existing history to change attribution.
 
 ## Token efficiency
-- Never dump the entire extras.py file.
+- Never dump a whole scene catalog module at once.
 - Locate classes with grep; read targeted line ranges.
 - Prefer surgical patches over broad rewrites.
 - Read reports and reference files only when relevant.

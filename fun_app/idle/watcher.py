@@ -1,0 +1,704 @@
+"""Start fun after the configured graphical-session idle delay."""
+import argparse
+from contextlib import contextmanager, ExitStack
+import ctypes
+import glob
+import math
+import os
+from pathlib import Path
+import select
+import shlex
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import time
+
+from .. import settings as _settings
+from ..paths import COMMANDS
+from . import session
+from .runtime import Runtime
+from .wayland import Wayland
+
+ENTRYPOINT = COMMANDS / 'fun-idle'
+
+_config_stamp = None
+
+
+def refresh_settings():
+    """Pick up GUI changes while the login watcher is already running."""
+    global _config_stamp, IDLE_MIN, IDLE_ENABLED, CHARGING_ONLY
+    try:
+        stamp = _settings.FILE.stat().st_mtime_ns
+    except FileNotFoundError:
+        stamp = 0
+    if stamp == _config_stamp:
+        return
+    data = _settings.load()
+    IDLE_MIN = float(os.environ.get('FUN_IDLE_MIN', data['idle_minutes']))
+    IDLE_ENABLED = os.environ.get('FUN_IDLE_ENABLED', str(int(data['idle_enabled']))) != '0'
+    CHARGING_ONLY = os.environ.get('FUN_IDLE_CHARGING_ONLY', str(int(data['charging_only']))) != '0'
+    if not math.isfinite(IDLE_MIN) or not 0 < IDLE_MIN * 60000 <= 0xffffffff:
+        raise ValueError('FUN_IDLE_MIN must specify a positive Wayland-compatible timeout')
+    _config_stamp = stamp
+
+
+POLL = 2.0
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "fun")
+LOGF = os.path.join(CACHE, "idle.log")
+FUN = os.environ.get("FUN_BIN", str(COMMANDS / "fun"))
+EV = struct.Struct("llHHi") if struct.calcsize("l") == 8 else struct.Struct("iiHHi")
+
+
+def log(msg):
+    line = "%s %s" % (time.strftime("%F %T"), msg)
+    try:
+        os.makedirs(CACHE, exist_ok=True)
+        if os.path.exists(LOGF) and os.path.getsize(LOGF) > 200000:
+            os.replace(LOGF, LOGF + ".1")
+        with open(LOGF, "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+    if sys.stderr.isatty():
+        print(line, file=sys.stderr)
+
+
+# ------------------------------------------------------------------ conditions
+def lid_open():
+    for p in glob.glob("/proc/acpi/button/lid/*/state"):
+        try:
+            if "closed" in Path(p).read_text():
+                return False
+        except OSError:
+            pass
+    return True                                   # no lid switch found: assume open
+
+
+def on_ac():
+    adapters = False
+    batteries = []
+    for path in map(Path, glob.glob("/sys/class/power_supply/*")):
+        try:
+            if (path / 'scope').is_file() and (path / 'scope').read_text().strip() == 'Device':
+                continue
+            kind = (path / 'type').read_text().strip()
+            if kind == 'Battery':
+                batteries.append((path / 'status').read_text().strip())
+            elif (path / 'online').exists():
+                adapters = True
+                if (path / 'online').read_text().strip() == '1':
+                    return True
+        except OSError:
+            continue
+    if adapters:
+        return False
+    # Some laptops expose only battery status. An unknown state cannot
+    # establish AC power. A desktop without a battery needs no adapter.
+    return not batteries or all(state in ('Charging', 'Full') for state in batteries)
+
+
+class Evdev:
+    name = "evdev (/dev/input)"
+
+    def __init__(self):
+        self.fds = {}
+        self.last = time.monotonic()
+        self.scan_at = 0.0
+        self.seen = False
+        self.rescan()
+
+    def _devices(self):
+        try:
+            txt = Path("/proc/bus/input/devices").read_text()
+        except OSError:
+            return []
+        out = []
+        for blk in txt.split("\n\n"):
+            hs = ""
+            for ln in blk.splitlines():
+                if ln.startswith("H: Handlers="):
+                    hs = ln
+            if ("kbd" in hs or "mouse" in hs) and "Lid" not in blk and "Power Button" not in blk:
+                for tok in hs.split():
+                    if tok.startswith("event"):
+                        out.append("/dev/input/" + tok)
+        return out
+
+    def rescan(self):
+        now = time.monotonic()
+        if now < self.scan_at:
+            return
+        self.scan_at = now + 60
+        want = set(self._devices())
+        have = set(self.fds.values())
+        for p in want - have:
+            try:
+                fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK)
+                self.fds[fd] = p
+            except OSError:
+                pass
+        for fd, p in list(self.fds.items()):
+            if p not in want:
+                os.close(fd)
+                del self.fds[fd]
+        if not want or set(self.fds.values()) != want:
+            self.close()
+            raise OSError("complete readable input-device set unavailable")
+
+    def pump(self, timeout):
+        """Wait up to timeout s, record activity. Returns True if there was activity."""
+        self.rescan()
+        if not self.fds:
+            raise OSError("input devices disconnected")
+        active = False
+        try:
+            r, _, _ = select.select(list(self.fds), [], [], timeout)
+        except ValueError as exc:
+            raise OSError("input devices unavailable") from exc
+        for fd in r:
+            try:
+                data = os.read(fd, EV.size * 64)
+            except BlockingIOError:
+                continue
+            except OSError:
+                self.close()
+                raise
+            if not data:
+                self.close()
+                raise OSError('input device disconnected')
+            for off in range(0, len(data) - EV.size + 1, EV.size):
+                typ = EV.unpack_from(data, off)[2]
+                if typ in (1, 2, 3):                       # key / rel / abs
+                    active = True
+        if active:
+            self.seen = True
+            self.last = time.monotonic()
+        return active
+
+    def idle(self):
+        return time.monotonic() - self.last if self.seen and self.fds else 0
+
+    @property
+    def evidence(self):
+        return 'input observed' if self.seen else 'devices opened; awaiting first activity'
+
+    def close(self):
+        for fd in self.fds:
+            os.close(fd)
+        self.fds.clear()
+
+
+def launch_cmd():
+    custom = os.environ.get("FUN_TERMINAL")
+    if custom:
+        return shlex.split(custom)
+    return ["kitty", "--start-as=fullscreen", "--class=fun-screensaver", "--title=fun",
+            "-o", "confirm_os_window_close=0", "-o", "mouse_hide_wait=1", "-o", "window_padding_width=0",
+            "-o", "remember_window_size=no", "-o", "cursor_blink_interval=0", "-o", "background=#000000",
+            "-o", "background_opacity=1", "-o", "enable_audio_bell=no", "-o", "allow_remote_control=no",
+            "-o", "shell_integration=disabled", FUN]
+
+
+class Counter:
+    """Track samples between iterations, including input between two sleeps."""
+    def __init__(self, name, read):
+        self.name = name
+        self.read = read
+        self.seconds = read()
+        self.changed = self.reset = False
+        self.last_change = time.monotonic()
+
+    def pump(self, timeout):
+        time.sleep(timeout)
+        sample = self.read()
+        active = sample < self.seconds
+        if sample != self.seconds:
+            self.changed = True
+            self.last_change = time.monotonic()
+        elif time.monotonic() - self.last_change >= 10:
+            raise OSError('idle counter stopped changing; rechecking backend')
+        self.reset |= active
+        self.seconds = sample
+        return active
+
+    def idle(self):
+        return self.seconds if self.changed else 0
+
+    @property
+    def evidence(self):
+        if self.reset:
+            return 'counter movement and activity reset observed'
+        return 'counter advancing' if self.changed else 'connected; awaiting counter movement'
+
+    def close(self):
+        pass
+
+
+def x11_time():
+    raw = session.output('xprintidle')
+    if not raw or not raw.isdecimal():
+        raise OSError('install xprintidle or check X11 display access')
+    return int(raw) / 1000
+
+
+def mutter_time():
+    val = session.bus('user', 'org.gnome.Mutter.IdleMonitor', '/org/gnome/Mutter/IdleMonitor/Core',
+                      'org.gnome.Mutter.IdleMonitor', 'GetIdletime')
+    if type(val) is not int or val < 0:
+        raise OSError('Mutter idle counter unavailable on session bus')
+    return val / 1000
+
+
+def pick_backend(threshold, sid, notes, *, allow_hint=True):
+    kind = session.session_type()
+    candidates = []
+    if os.getenv('FUN_IDLE_FILE'):
+        candidates.append(('test file', lambda: Counter('test file', lambda: float(Path(os.environ['FUN_IDLE_FILE']).read_text()))))
+    if kind == 'wayland':
+        candidates.append((Wayland.name, lambda: Wayland(threshold)))
+    if kind in ('wayland', 'x11') and ('GNOME' in os.getenv('XDG_CURRENT_DESKTOP', '').upper()
+                                       or not os.getenv('XDG_CURRENT_DESKTOP')):
+        candidates.append(('Mutter', lambda: Counter('GNOME Mutter', mutter_time)))
+    if kind == 'x11':
+        candidates.append(('X11', lambda: Counter('X11 xprintidle', x11_time)))
+        if allow_hint:
+            candidates.append((Evdev.name, Evdev))
+    if allow_hint and sid and kind in ('wayland', 'x11'):
+        candidates.append((session.Hint.name, lambda: session.Hint(sid)))
+    for name, connect in candidates:
+        try:
+            backend = connect()
+            if isinstance(backend, Counter) and name != 'test file':
+                backend.pump(.15)
+                if not backend.changed:
+                    raise OSError('counter connected but no movement observed; will retry')
+        except (OSError, ValueError) as exc:
+            notes.append(f'{name}: {exc}')
+            continue
+        notes.append(f'{backend.name}: {backend.evidence}')
+        return backend
+    notes.append('No usable idle source. Check compositor support and graphical login environment.')
+    return None
+
+
+def terminal():
+    cmd = launch_cmd()
+    if not cmd or not shutil.which(cmd[0]):
+        name = os.path.basename(cmd[0]) if cmd else '(empty)'
+        raise OSError(f'terminal {name} missing; install kitty or set FUN_TERMINAL to a foreground terminal command')
+    return cmd
+
+
+def terminal_status():
+    try:
+        return os.path.basename(terminal()[0]) + ' (found)', True
+    except (ValueError, OSError) as exc:
+        return str(exc), False
+
+
+def start_saver():
+    cmd = terminal()
+    log('launching ' + os.path.basename(cmd[0]))
+    os.makedirs(CACHE, exist_ok=True)
+    # Also cover hard watcher death outside a systemd cgroup. This CLI is
+    # single-threaded. Resolve libc before fork and arm the child before exec.
+    parent = os.getpid()
+    prctl = ctypes.CDLL(None).prctl
+
+    def tie_to_watcher():
+        if prctl(1, signal.SIGTERM, 0, 0, 0) != 0 or os.getppid() != parent:  # PR_SET_PDEATHSIG
+            os._exit(1)
+
+    with open(os.path.join(CACHE, 'saver.err'), 'a') as err:
+        return subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
+                                env=dict(os.environ, FUN_IDLE_LAUNCH='1'), start_new_session=True,
+                                preexec_fn=tie_to_watcher)
+
+
+def stop_saver(proc):
+    # The leader can exit before another child in its private group.
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            break
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            proc.poll()
+            try:
+                os.killpg(proc.pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(.05)
+        else:
+            continue
+        break
+    proc.wait()
+
+
+@contextmanager
+def owned_saver(rt):
+    with rt.claim('window') as lock:
+        if lock is None:
+            raise OSError('another fun-idle terminal is running in this session')
+        proc = start_saver()
+        try:
+            yield proc
+        finally:
+            stop_saver(proc)
+
+
+def conditions(sid):
+    reasons = session.blockers(session.properties(sid) if sid else {})
+    if not os.getenv('FUN_IDLE_NO_LID') and not lid_open():
+        reasons.append('lid closed')
+    if CHARGING_ONLY and not os.getenv('FUN_IDLE_NO_AC') and not on_ac():
+        reasons.append('charger unplugged')
+    return reasons
+
+
+def runtime():
+    kind = session.session_type()
+    display = os.getenv('WAYLAND_DISPLAY' if kind == 'wayland' else 'DISPLAY', '')
+    return Runtime('/'.join((kind, display)))
+
+
+def startup_entry():
+    return _settings.FILE.parent.parent / 'autostart/fun-idle.desktop'
+
+
+def autostart(rt):
+    if not IDLE_ENABLED or rt.holder('watcher') is not None:
+        return 0
+    if session.output('systemctl', '--user', 'is-active', 'graphical-session.target') == 'active':
+        # The desktop entry is the sole login trigger. Keep the desktop's
+        # environment, including unset display variables, scoped to this unit.
+        keys = ('DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE '
+                'XDG_SESSION_ID XDG_CURRENT_DESKTOP XDG_SEAT XDG_VTNR XDG_CONFIG_HOME '
+                'XDG_CACHE_HOME XDG_RUNTIME_DIR PATH').split()
+        keys.extend(k for k in os.environ if k.startswith('FUN_'))
+        args = ['systemd-run', '--user', '--quiet', '--collect', '--unit=' + rt.unit,
+                '-p', 'PartOf=graphical-session.target', '-p', 'Restart=on-failure',
+                '-p', 'RestartSec=5s', '-p', 'StartLimitIntervalSec=120s', '-p', 'StartLimitBurst=3']
+        present = [k for k in keys if os.getenv(k)]
+        absent = [k for k in keys if k not in present]
+        args.extend('--setenv=' + k + '=' + os.environ[k] for k in present)
+        if absent:
+            args.extend(['-p', 'UnsetEnvironment=' + ' '.join(absent)])
+        args.append(str(ENTRYPOINT))
+        try:
+            if subprocess.run(args, timeout=10).returncode == 0:
+                return 0
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if session.output('systemctl', '--user', 'is-active', rt.unit) in ('active', 'activating'):
+            return 0
+        log('user service unavailable; using desktop-owned watcher')
+    # Desktop sessions without a graphical systemd target run us directly.
+    for attempt in range(3):
+        try:
+            return watch(rt)
+        except Exception as exc:
+            log(f'watcher failed ({type(exc).__name__}); attempt {attempt + 1}/3')
+            if attempt == 2:
+                raise
+            time.sleep(5)
+
+
+class Watcher:
+    def __init__(self, rt):
+        self.rt = rt
+        self.window = ExitStack()
+        self.backend = self.proc = self.sid = None
+        self.threshold = None
+        self.token = self.finished = None
+        self.result = ''
+        self.notes = []
+        self.reason = 'starting'
+        self.latched = False
+        self.retry_at = self.policy_at = self.session_at = 0
+        self.blocked = []
+        self.previous = {}
+
+    def stop(self, reason):
+        if self.proc is not None:
+            self.window.close()
+            self.proc = None
+            log('saver stopped: ' + reason)
+
+    def reset(self):
+        self.stop('reconfiguring')
+        if self.backend:
+            self.backend.close()
+            self.backend = None
+        self.threshold = None
+        self.retry_at = 0
+        self.latched = False
+
+    def end_test(self, result):
+        if self.token and self.token != self.finished:
+            self.result = result
+            self.finished = self.token
+
+    def publish(self):
+        term, available = terminal_status()
+        state = dict(terminal=term, terminal_available=available, charging_only=CHARGING_ONLY,
+                     session=self.sid,
+                     backend=self.backend.name if self.backend else 'none',
+                     evidence=self.backend.evidence if self.backend else 'unavailable',
+                     notes=self.notes, reason=self.reason, threshold=self.threshold,
+                     enabled=IDLE_ENABLED, minutes=IDLE_MIN, test=self.token, result=self.result)
+        if state != self.previous:
+            self.rt.publish(state)
+            log(f"{state['backend']}: {state['evidence']}; {self.reason}")
+            self.previous = state
+
+    def session_ended(self, now):
+        if now >= self.session_at:
+            self.session_at = now + 15
+            if self.sid:
+                props = session.properties(self.sid)
+                sessions = None if props else session.output(
+                    'loginctl', 'show-user', str(os.getuid()), '-p', 'Sessions', '--value')
+                if props.get('State') == 'closing' or (sessions is not None and self.sid not in sessions.split()):
+                    self.reason = 'graphical session ended'
+                    return True
+            else:
+                self.sid = session.resolve_session()
+        return False
+
+    def select_backend(self, threshold, now):
+        # If login services were still coming up, promote a higher-priority
+        # detector without discarding the hint history on an unsuccessful probe.
+        if isinstance(self.backend, (session.Hint, Evdev)) and not self.proc and now >= self.retry_at:
+            notes = []
+            preferred = pick_backend(threshold, self.sid, notes, allow_hint=False)
+            if preferred:
+                self.backend.close()
+                self.backend, self.notes = preferred, notes
+                self.latched = False
+            self.retry_at = now + 30
+        if self.backend is None and now >= self.retry_at:
+            self.notes = []
+            self.backend = pick_backend(threshold, self.sid, self.notes)
+            log("backend selection: " + " | ".join(self.notes))
+            self.retry_at = now + 15
+
+    def step(self):
+        refresh_settings()
+        if not IDLE_ENABLED:
+            self.reason = 'disabled in settings'
+            return False
+        token = self.rt.holder('test') or None
+        testing = bool(token and token != self.finished)
+        threshold = 10 if testing else IDLE_MIN * 60
+        if self.threshold != threshold or token != self.token:
+            self.reset()
+            self.threshold = threshold
+            if token != self.token:
+                self.result = 'Waiting for 10 seconds of idle' if token else ''
+            self.token = token
+            self.armed = time.monotonic()
+        now = time.monotonic()
+        if self.session_ended(now):
+            return False
+        self.select_backend(threshold, now)
+        if self.backend is None:
+            self.reason = 'waiting for idle backend'
+            self.end_test('FAIL: ' + (self.notes[-1] if self.notes else self.reason))
+            time.sleep(1)
+            return True
+        try:
+            self.update_saver(threshold, testing)
+        except (OSError, ValueError) as exc:
+            self.reason = f'backend disconnected: {exc}'
+            self.end_test('FAIL: ' + self.reason)
+            self.reset()
+            self.threshold = threshold
+            self.retry_at = time.monotonic() + 3
+        return True
+
+    def update_saver(self, threshold, testing):
+        active = self.backend.pump(.25 if self.proc else POLL)
+        idle = self.backend.idle() >= threshold
+        if active or not idle:
+            self.latched = False
+        if self.proc and self.proc.poll() is not None:
+            code = self.proc.returncode
+            self.stop('terminal exited')
+            self.reason = (f'launch failed: terminal exited ({code}); see saver.err' if code else
+                           'terminal exited; waiting for fresh activity')
+            self.end_test('FAIL: terminal exited before activity was observed')
+            return
+        if self.proc and (active or not idle):
+            self.stop('activity/resumed')
+            self.end_test('PASS: automatic launch and activity dismissal observed' if active else
+                          'FAIL: idle ended without an observed activity event')
+            self.reason = 'activity observed'
+            return
+        if not idle and not self.proc:
+            self.reason = 'waiting for idle'
+            return
+        if self.latched and not self.proc:
+            return
+        now = time.monotonic()
+        if not self.proc or now >= self.policy_at:
+            self.blocked = conditions(self.sid)
+            self.policy_at = now + 2
+        if self.blocked:
+            self.reason = 'blocked: ' + ', '.join(self.blocked)
+            if self.proc:
+                self.stop(self.reason)
+                self.latched = False
+                self.end_test('FAIL: ' + self.reason)
+            if testing and self.finished != self.token:
+                self.result = self.reason
+            return
+        if not self.proc and (not testing or now - self.armed >= threshold):
+            # Recheck input that arrived during the policy queries.
+            if self.backend.pump(0) or self.backend.idle() < threshold:
+                return
+            self.latched = True
+            try:
+                self.proc = self.window.enter_context(owned_saver(self.rt))
+            except (OSError, ValueError) as exc:
+                self.reason = 'launch failed: ' + str(exc)
+                self.end_test('FAIL: ' + self.reason)
+            else:
+                self.reason = 'saver running'
+                if testing:
+                    self.result = 'Terminal launched; move the mouse to dismiss'
+
+
+def watch(rt):
+    with rt.claim('watcher') as lock:
+        if lock is None:
+            return 0
+        lock.truncate(0)
+        lock.write(str(os.getpid()))
+        lock.flush()
+        done = []
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, lambda *_: done.append(True))
+        w = Watcher(rt)
+        w.publish()
+        log('watcher started')
+        try:
+            while not done and ENTRYPOINT.exists() and Path(__file__).exists() and w.step():
+                w.publish()
+        finally:
+            w.reset()
+            log('watcher stopped')
+    return 0
+
+
+def report(rt):
+    sid = session.resolve_session()
+    state = rt.state() if rt else {}
+    running = rt is not None and rt.holder('watcher') is not None
+    notes = []
+    be = pick_backend(IDLE_MIN * 60, sid, notes)
+    evidence = 'none'
+    seconds = None
+    if be:
+        try:
+            be.pump(.12)
+            evidence = be.evidence
+            if isinstance(be, Counter):
+                seconds = be.seconds
+        except (OSError, ValueError) as exc:
+            evidence = 'disconnected during probe: ' + str(exc)
+        finally:
+            be.close()
+    term, available = terminal_status()
+    try:
+        entry = startup_entry().read_text().splitlines()
+    except OSError:
+        entry = []
+    installed = 'Exec=/usr/local/bin/fun-idle --autostart' in entry and 'Hidden=true' not in entry
+    print('Desktop / session:', os.getenv('XDG_CURRENT_DESKTOP', 'unknown'), '/', session.session_type())
+    print('Session identified:', bool(state.get('session', sid)), ' | display set:', bool(os.getenv('WAYLAND_DISPLAY' if session.session_type() == 'wayland' else 'DISPLAY')))
+    print('Watcher:', 'running' if running else 'stopped', '| enabled:', state.get('enabled', IDLE_ENABLED))
+    print('Configured delay:', state.get('minutes', IDLE_MIN), f"min (factory default {_settings.DEFAULTS['idle_minutes']} min)")
+    print('Login entry:', 'installed' if installed else 'missing, disabled or obsolete; rerun ./install.sh')
+    service = session.output('systemctl', '--user', 'is-active', rt.unit) if rt else None
+    print('Transient user service:', service or 'inactive/unavailable')
+    print('Terminal:', state.get('terminal', term), '| lid open:', lid_open(), '| on charger:', on_ac(),
+          '| charger-only:', state.get('charging_only', CHARGING_ONLY))
+    reasons = conditions(sid)
+    print('Session / inhibitor checks:', ', '.join(reasons) or 'clear')
+    print('Backend selection (in session preference order):', ' | '.join(state.get('notes') or notes))
+    print('Backend:', state.get('backend', be.name if be else 'none'), '|', state.get('evidence', evidence))
+    print('Idle state:', state.get('reason', 'watcher has no live observations'))
+    if seconds is not None:
+        print('Counter sample in this session:', round(seconds, 1), 'idle seconds')
+    if state.get('threshold') is not None:
+        print('Active notification delay:', state['threshold'], 'seconds')
+    if not running and IDLE_ENABLED:
+        print('Log out and back in, or run fun-idle --autostart from this graphical session.')
+    if not sid:
+        print('Check loginctl list-sessions and the graphical login environment.')
+    if running:
+        print('Use fun-idle --test to observe one idle/resume cycle.')
+    limited = state.get('backend') == 'none' or 'unverified' in state.get('evidence', evidence)
+    failed = state.get('reason', '').startswith('launch failed')
+    if failed:
+        print('Check the foreground terminal command and the saver.err log; use fun-idle --now.')
+    policy_unknown = any(reason.startswith(('cannot check', 'cannot read')) for reason in reasons)
+    available = state.get('terminal_available', available)
+    return int(state.get('enabled', IDLE_ENABLED) and
+               (not running or not be or not sid or not available or limited or failed or policy_unknown))
+
+
+def main():
+    refresh_settings()
+    p = argparse.ArgumentParser(description=__doc__, epilog=f"Configured delay {IDLE_MIN:g} min; factory default {_settings.DEFAULTS['idle_minutes']} min. Environment overrides saved settings.")
+    group = p.add_mutually_exclusive_group()
+    for flag, desc in [('status', 'show watcher and session status'), ('diagnose', 'explain backend selection and blockers'),
+                       ('test', 'test 10-second idle and activity dismissal on the login watcher'),
+                       ('now', 'test a terminal launch immediately'), ('autostart', 'start the enabled login watcher'),
+                       ('trace', 'follow timestamped watcher and backend transitions')]:
+        group.add_argument('--' + flag, action='store_true', help=desc)
+    args = p.parse_args()
+    if args.trace:
+        os.makedirs(CACHE, exist_ok=True)
+        os.execlp('tail', 'tail', '-n', '30', '-F', LOGF)
+    if args.now:
+        def interrupt(*_):
+            raise KeyboardInterrupt
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, interrupt)
+        with owned_saver(runtime()) as proc:
+            return proc.wait()
+    if args.status or args.diagnose:
+        try:
+            rt = runtime()
+        except OSError as exc:
+            print('Runtime directory unavailable:', exc)
+            rt = None
+        return report(rt)
+    if args.autostart:
+        if not IDLE_ENABLED:
+            return 0
+        log('desktop startup invoked')
+        session.recover_login_display()
+        kind = session.session_type()
+        if kind not in ('x11', 'wayland') or not os.getenv('WAYLAND_DISPLAY' if kind == 'wayland' else 'DISPLAY'):
+            raise OSError('desktop entry has no graphical display; check login environment and run fun-idle --autostart inside the desktop')
+    rt = runtime()
+    if args.test:
+        return rt.test()
+    return autostart(rt) if args.autostart else watch(rt)
+
+
+def cli():
+    try:
+        return main()
+    except KeyboardInterrupt:
+        return 130
+    except (ValueError, OSError) as exc:
+        log(str(exc))
+        print('fun-idle:', exc, file=sys.stderr)
+        return 1

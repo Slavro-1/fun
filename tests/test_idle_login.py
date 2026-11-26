@@ -3,6 +3,7 @@ import os
 import select
 from pathlib import Path
 import json
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -35,21 +36,33 @@ class LoginTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         return r.stdout
 
+    def test_incomplete_checkout_stops_before_dependency_checks(self):
+        src = self.root / 'incomplete'
+        src.mkdir()
+        for name in ('install.sh', 'fun', 'fun-idle', 'fun-config', 'extras.py'):
+            shutil.copy2(ROOT / name, src)
+        shutil.copytree(ROOT / 'installer', src / 'installer', ignore=shutil.ignore_patterns('__pycache__'))
+        (src / 'installer/dependencies.sh').write_text(
+            'installer_distro() { :; }; check_dependencies() { echo "dependency check ran"; }')
+        script(self.bin / 'sudo', 'exit 99')
+        result = subprocess.run([src / 'install.sh'], capture_output=True, text=True,
+                                env=self.env, timeout=30, stdin=subprocess.DEVNULL)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('Missing fun_app/gui/preview.py.', result.stderr)
+        self.assertNotIn('dependency check ran', result.stdout)
+
     def test_upgrade_install_again_and_uninstall(self):
         src = self.root / 'src'
         src.mkdir()
         prefix = str(self.root / 'stage')
-        for name in ('install.sh', 'uninstall.sh', 'fun-idle', 'fun-config', 'fun', 'fun_settings.py',
-                     'fun_wayland.py', 'fun_runtime.py', 'fun_session.py'):
-            target = src / name
-            target.write_text((ROOT / name).read_text().replace('/usr/local', prefix))
-            target.chmod(0o755)
-        (src / 'tools').mkdir()
-        # Package prompting and the renderer have independent suites.
-        (src / 'tools/install-deps.sh').write_text('installer_distro() { :; }; check_dependencies() { :; }')
-        helper = (ROOT / 'tools/install_files.py').read_text().replace('/usr/local', prefix)
-        (src / 'tools/install_files.py').write_text(helper)
-        (src / 'tools/snap.py').touch()
+        for name in ('install.sh', 'uninstall.sh', 'fun-idle', 'fun-config', 'fun'):
+            shutil.copy2(ROOT / name, src)
+        for name in ('fun_app', 'installer'):
+            shutil.copytree(ROOT / name, src / name, ignore=shutil.ignore_patterns('__pycache__'))
+        # Package prompting and the full renderer self-test have independent checks.
+        (src / 'installer/dependencies.sh').write_text('installer_distro() { :; }; check_dependencies() { :; }')
+        helper = (ROOT / 'installer/install_files.py').read_text().replace('/usr/local', prefix)
+        (src / 'installer/install_files.py').write_text(helper)
         (src / 'extras.py').write_text('print("fixture scene check passed")')
         script(self.bin / 'sudo', '[ "$1" = /usr/bin/python3 ] || exit 99; exec "$@"')
         script(self.bin / 'systemctl', 'exit 1')
@@ -72,6 +85,7 @@ class LoginTests(unittest.TestCase):
         self.assertFalse(entry.exists())
         self.assertFalse(Path(prefix, 'bin/fun-idle').exists())
         self.assertFalse(Path(prefix, 'lib/fun/fun_wayland.py').exists())
+        self.assertFalse(Path(prefix, 'lib/fun/fun_app/scenes/registry.py').exists())
         self.assertEqual(self.cfg.read_bytes(), settings)
 
     def test_manual_window_singleton_and_watcher_death(self):

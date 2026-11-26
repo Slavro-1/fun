@@ -17,16 +17,18 @@ jobs:
           persist-credentials: false
       - name: Check Bash syntax
         run: |
-          for script in fun install.sh uninstall.sh tools/install-deps.sh scripts/final-prepush.sh; do
+          for script in fun install.sh uninstall.sh installer/dependencies.sh fun_app/legacy_savers.sh scripts/final-prepush.sh; do
             bash -n "$script" || exit 1
           done
       - name: Compile Python
-        run: /usr/bin/python3 -m py_compile *.py fun-config fun-idle tools/*.py scripts/*.py
+        run: |
+          /usr/bin/python3 -m py_compile extras.py fun-config fun-idle
+          /usr/bin/python3 -m compileall -q fun_app installer scripts tests tools
       - name: Run unit and integration tests
-        run: /usr/bin/python3 -m unittest discover -s tools -p 'test_*.py'
+        run: /usr/bin/python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Exercise every active scene
         run: /usr/bin/python3 -I extras.py --selftest
       - name: Exercise renderer transports, resize, fallback and cleanup
         run: |
-          /usr/bin/python3 tools/ptygfx.py extras.py koi --jobs 1 --transport shm --mode all --fallbacks
-          /usr/bin/python3 tools/ptygfx.py extras.py koi --jobs 1 --transport zlib --mode crash
+          /usr/bin/python3 tools/rendering/ptygfx.py extras.py koi --jobs 1 --transport shm --mode all --fallbacks
+          /usr/bin/python3 tools/rendering/ptygfx.py extras.py koi --jobs 1 --transport zlib --mode crash

@@ -23,9 +23,9 @@ LIB = Path('/usr/local/lib/fun')
 if os.getuid() == 0 or os.getuid() != os.geteuid():
     raise SystemExit('FAIL desktop verification requires a normal user')
 sys.path.insert(0, str(ROOT))
-from tools import install_files
-import fun_session
-from fun_runtime import Runtime
+from installer import install_files
+from fun_app.idle import session as fun_session
+from fun_app.idle.runtime import Runtime
 
 
 def require(ok, message):
@@ -77,13 +77,14 @@ def session_check(kind):
 
 
 def suite():
-    for script in ('fun', 'install.sh', 'uninstall.sh', 'tools/install-deps.sh', 'scripts/final-prepush.sh'):
+    for script in ('fun', 'install.sh', 'uninstall.sh', 'installer/dependencies.sh', 'fun_app/legacy_savers.sh', 'scripts/final-prepush.sh'):
         run('/bin/bash', '-n', script)
     run('/bin/dash', '-n', 'scripts/final-prepush.sh')
-    for path in [*ROOT.glob('*.py'), *ROOT.glob('tools/*.py'), *ROOT.glob('scripts/*.py'),
-                 ROOT / 'fun-config', ROOT / 'fun-idle']:
+    for path in [ROOT / 'extras.py', ROOT / 'fun-config', ROOT / 'fun-idle',
+                 *(path for name in ('fun_app', 'installer', 'scripts', 'tests', 'tools')
+                   for path in (ROOT / name).rglob('*.py'))]:
         compile(path.read_bytes(), str(path), 'exec')
-    tests = unittest.defaultTestLoader.discover(str(ROOT / 'tools'), 'test_*.py')
+    tests = unittest.defaultTestLoader.discover(str(ROOT / 'tests'), 'test_*.py')
     require(tests.countTestCases() > 0, 'No tests discovered')
     result = unittest.TextTestRunner().run(tests)
     require(result.wasSuccessful() and not result.skipped, f'Unit tests failed or skipped: {result.skipped}')
@@ -91,10 +92,10 @@ def suite():
     require(len(names) == len(set(names)) == 41, 'Expected 41 distinct active scenes')
     run('./fun', '--selftest')
     for transport, mode, extras in [('shm', 'all', ['--fallbacks']), ('zlib', 'crash', [])]:
-        run(PY, 'tools/ptygfx.py', 'extras.py', 'koi', '--jobs', '1',
+        run(PY, 'tools/rendering/ptygfx.py', 'extras.py', 'koi', '--jobs', '1',
             '--transport', transport, '--mode', mode, *extras)
-    run(PY, 'tools/ptytest.py', 'extras.py', 'koi', 'resize')
-    run(PY, 'tools/liveness.py', 'koi')
+    run(PY, 'tools/rendering/ptytest.py', 'extras.py', 'koi', 'resize')
+    run(PY, 'tools/rendering/liveness.py', 'koi')
 
 
 def installation():
@@ -102,6 +103,8 @@ def installation():
         fs = install_files.Files(stack, False)
         for system in (False, True):
             _, manifest, targets, _ = install_files.layout(fs, system, True)
+            if system:
+                program_dirs = {path.parent for path in targets}
             owner = 0 if system else os.getuid()
             fs.directory(manifest.parent)  # reject linked parent directories
             info = manifest.lstat()
@@ -133,9 +136,10 @@ def installation():
             if path != config / 'autostart/fun-idle.desktop':
                 require(not re.search(r'(?m)^Exec=.*\b(?:fun-idle|fun-rotate)\b', path.read_text()),
                         f'Additional idle autostart {path}')
-    for directory in (BIN, LIB):
+    for directory in sorted(program_dirs):
         require(not list(directory.glob('.fun-stage-*')), f'Unfinished transaction in {directory}')
-    backups = sorted([*BIN.glob('fun*.bak*'), *LIB.glob('*.bak*')])
+    backups = [path for directory in program_dirs
+               for path in directory.glob('fun*.bak*' if directory == BIN else '*.bak*')]
     print(f'Inspected {len(backups)} system backup paths. Installer rollback copies are retained.')
     if (BIN / 'fun-rotate').exists():
         print('Retained standalone legacy helper /usr/local/bin/fun-rotate (outside the installation manifest).')
@@ -270,8 +274,8 @@ def installed_behavior():
     boot = int(re.search(r'^btime (\d+)$', Path('/proc/stat').read_text(), re.M)[1])
     ticks = int((proc / 'stat').read_text().rsplit(')', 1)[1].split()[19])
     started = boot + ticks / os.sysconf('SC_CLK_TCK')
-    modules = [BIN / 'fun-idle', *(LIB / n for n in ('fun_session.py', 'fun_settings.py',
-                                                      'fun_wayland.py', 'fun_runtime.py'))]
+    modules = [BIN / 'fun-idle', LIB / 'fun_app/settings.py', LIB / 'fun_app/paths.py',
+               *(LIB / 'fun_app/idle').glob('*.py')]
     require(all(p.stat().st_ctime < started for p in modules), 'Log in again to load the installed watcher')
     run(BIN / 'fun-idle', '--diagnose')
     run(BIN / 'fun-idle', '--status')
@@ -288,7 +292,7 @@ def main(kind):
     os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
     try:
         for name, check in [('dependencies', dependencies), ('source suite, scenes and renderers', suite),
-                            ('candidate GTK controls', lambda: run(PY, '-I', 'tools/gui_smoke.py', timeout=30)),
+                            ('candidate GTK controls', lambda: run(PY, '-I', 'tests/gui_smoke.py', timeout=30)),
                             ('installation, autostart and obsolete artifacts', installation),
                             ('installed entry points and idle/resume', installed_behavior)]:
             print(f'Checking {kind} {name}', flush=True)

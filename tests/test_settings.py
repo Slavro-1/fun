@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import fun_settings as settings
+from fun_app import settings
 
 
 class SettingsTests(unittest.TestCase):

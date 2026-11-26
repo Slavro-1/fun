@@ -1,7 +1,5 @@
 """Headless idle, session policy, process ownership and wire protocol regressions."""
 from contextlib import ExitStack, nullcontext
-from importlib.machinery import SourceFileLoader
-from importlib.util import module_from_spec, spec_from_loader
 import os
 from pathlib import Path
 import shlex
@@ -15,13 +13,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import fun_runtime
-import fun_session as session
-import fun_wayland as wl
-
-spec = spec_from_loader('idle', SourceFileLoader('idle', str(ROOT / 'fun-idle')))
-idle = module_from_spec(spec)
-spec.loader.exec_module(idle)
+from fun_app.idle import runtime, session, watcher as idle, wayland as wl
 
 
 def packet(obj, op, body=b''):
@@ -327,8 +319,8 @@ class WatcherTests(unittest.TestCase):
 class LifecycleTests(unittest.TestCase):
     def test_live_singleton_and_automatic_unlock_on_death(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'XDG_RUNTIME_DIR': tmp}):
-            rt = fun_runtime.Runtime('wayland/test')
-            code = ("from fun_runtime import Runtime; import time; rt=Runtime('wayland/test'); "
+            rt = runtime.Runtime('wayland/test')
+            code = ("from fun_app.idle.runtime import Runtime; import time; rt=Runtime('wayland/test'); "
                     "lock=rt.claim('watcher'); lock.__enter__(); print('ready',flush=True); time.sleep(10)")
             with subprocess.Popen([sys.executable, '-c', code], cwd=ROOT, stdout=subprocess.PIPE) as proc:
                 try:

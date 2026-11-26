@@ -59,7 +59,7 @@ More motion, straight from the renderer:
 
 Run `fun-config` to choose scenes, rotation order, quality, and idle behavior. It saves your choices for the next launch.
 
-<p align="center"><img src="assets/fun-config.png" alt="The fun-config GTK4 settings window with scene previews and the Check idle activation button" width="700"></p>
+<p align="center"><img src="assets/gallery/fun-config.png" alt="The fun-config GTK4 settings window with scene previews and the Check idle activation button" width="700"></p>
 
 Useful shortcuts:
 
@@ -140,6 +140,24 @@ On other distributions, install system Python 3.11 or newer, PyGObject for that 
 ## Uninstall
 
 From the downloaded project folder, run `./uninstall.sh` (or `bash uninstall.sh` from a ZIP). The uninstaller checks separate system and per-user manifests. It removes files whose recorded device, inode, owner, mode and SHA-256 still match. It reports modified or unowned files and keeps saved settings, logs and backups. A missing manifest leaves files in its scope in place. To migrate a legacy installation, run the new installer first and review its adoption prompt. A malformed manifest stops the operation for inspection. System packages are managed separately by your distribution's package manager.
+
+## Development
+
+The root launchers work directly from a complete checkout. `fun_app/scenes/`
+contains the scene implementations and active registry. `fun_app/renderers/`
+handles playback and terminal output. The GTK settings app and idle watcher
+live in `fun_app/gui/` and `fun_app/idle/`. Installer internals live in
+`installer/`, automated tests in `tests/`, and renderer diagnostics in
+`tools/rendering/`. Maintainer verification scripts live in `scripts/`.
+
+From the repository root, run the regression suite and scene checks:
+
+```sh
+/usr/bin/python3 -m unittest discover -s tests -p 'test_*.py'
+./fun --selftest
+```
+
+For renderer and desktop checks, see the [release checklist](docs/release-checklist.md).
 
 ## License
 
