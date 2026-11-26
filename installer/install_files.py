@@ -15,43 +15,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = Path('/usr/local')
 # Keep the legacy install paths so existing ownership manifests remain valid.
-SOURCES = {
-    'fun': 'bin/fun',
-    'fun-idle': 'bin/fun-idle',
-    'fun-config': 'bin/fun-config',
-    'extras.py': 'lib/fun/extras.py',
-    'installer/compat/fun_settings.py': 'lib/fun/fun_settings.py',
-    'installer/compat/fun_wayland.py': 'lib/fun/fun_wayland.py',
-    'installer/compat/fun_runtime.py': 'lib/fun/fun_runtime.py',
-    'installer/compat/fun_session.py': 'lib/fun/fun_session.py',
-    'fun_app/gui/preview.py': 'lib/fun/snap.py',
-    **{name: f'lib/fun/{name}' for name in (
-        'fun_app/__init__.py',
-        'fun_app/legacy_savers.sh',
-        'fun_app/paths.py',
-        'fun_app/settings.py',
-        'fun_app/gui/__init__.py',
-        'fun_app/gui/config.py',
-        'fun_app/idle/__init__.py',
-        'fun_app/idle/runtime.py',
-        'fun_app/idle/session.py',
-        'fun_app/idle/watcher.py',
-        'fun_app/idle/wayland.py',
-        'fun_app/renderers/__init__.py',
-        'fun_app/renderers/half_block.py',
-        'fun_app/renderers/kitty.py',
-        'fun_app/renderers/playback.py',
-        'fun_app/renderers/terminal.py',
-        'fun_app/scenes/__init__.py',
-        'fun_app/scenes/ambient.py',
-        'fun_app/scenes/ambient_drawing.py',
-        'fun_app/scenes/base.py',
-        'fun_app/scenes/cinematic.py',
-        'fun_app/scenes/classic.py',
-        'fun_app/scenes/drawing.py',
-        'fun_app/scenes/registry.py',
-    )},
-}
+SOURCES = dict(line.split('\t') for line in (ROOT / 'installer/program-files.tsv').read_text().splitlines())
 STARTUP = """[Desktop Entry]
 Type=Application
 Name=fun idle screensaver

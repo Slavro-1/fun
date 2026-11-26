@@ -3,12 +3,19 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PYTHON=/usr/bin/python3
-for file in extras.py fun installer/dependencies.sh installer/install_files.py; do
-  if [[ ! -f "$HERE/$file" ]]; then
-    printf 'Missing %s. Run the installer from a complete checkout or extracted ZIP.\n' "$HERE/$file" >&2
+require_source() {
+  if [[ ! -f "$HERE/$1" ]]; then
+    printf 'Missing %s. Run the installer from a complete checkout or extracted ZIP.\n' "$1" >&2
     exit 1
   fi
+}
+
+for file in installer/dependencies.sh installer/install_files.py installer/program-files.tsv; do
+  require_source "$file"
 done
+while IFS=$'\t' read -r file _; do
+  require_source "$file"
+done < "$HERE/installer/program-files.tsv"
 
 admin=()
 if (( EUID != 0 )); then

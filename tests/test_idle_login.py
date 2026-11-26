@@ -36,6 +36,21 @@ class LoginTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         return r.stdout
 
+    def test_incomplete_checkout_stops_before_dependency_checks(self):
+        src = self.root / 'incomplete'
+        src.mkdir()
+        for name in ('install.sh', 'fun', 'fun-idle', 'fun-config', 'extras.py'):
+            shutil.copy2(ROOT / name, src)
+        shutil.copytree(ROOT / 'installer', src / 'installer', ignore=shutil.ignore_patterns('__pycache__'))
+        (src / 'installer/dependencies.sh').write_text(
+            'installer_distro() { :; }; check_dependencies() { echo "dependency check ran"; }')
+        script(self.bin / 'sudo', 'exit 99')
+        result = subprocess.run([src / 'install.sh'], capture_output=True, text=True,
+                                env=self.env, timeout=30, stdin=subprocess.DEVNULL)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('Missing fun_app/gui/preview.py.', result.stderr)
+        self.assertNotIn('dependency check ran', result.stdout)
+
     def test_upgrade_install_again_and_uninstall(self):
         src = self.root / 'src'
         src.mkdir()
