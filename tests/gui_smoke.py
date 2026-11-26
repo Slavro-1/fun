@@ -46,7 +46,8 @@ def main():
         config = Path(tmp) / 'fun/settings.toml'
         config.parent.mkdir()
         config.write_text('minutes = 1.5\nidle_minutes = 5.25\nidle_enabled = false\n')
-        script = Path(__file__).resolve().parents[1] / 'fun-config'
+        script = Path(sys.argv.pop()).resolve() if len(sys.argv) == 2 else (
+            Path(__file__).resolve().parents[1] / 'fun-config')
         app = runpy.run_path(str(script))
         result = []
 

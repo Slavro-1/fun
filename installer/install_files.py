@@ -14,8 +14,44 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = Path('/usr/local')
-SOURCES = ('fun', 'fun-idle', 'fun-config', 'extras.py', 'fun_settings.py',
-           'fun_wayland.py', 'fun_runtime.py', 'fun_session.py', 'tools/snap.py')
+# Keep the legacy install paths so existing ownership manifests remain valid.
+SOURCES = {
+    'fun': 'bin/fun',
+    'fun-idle': 'bin/fun-idle',
+    'fun-config': 'bin/fun-config',
+    'extras.py': 'lib/fun/extras.py',
+    'installer/compat/fun_settings.py': 'lib/fun/fun_settings.py',
+    'installer/compat/fun_wayland.py': 'lib/fun/fun_wayland.py',
+    'installer/compat/fun_runtime.py': 'lib/fun/fun_runtime.py',
+    'installer/compat/fun_session.py': 'lib/fun/fun_session.py',
+    'fun_app/gui/preview.py': 'lib/fun/snap.py',
+    **{name: f'lib/fun/{name}' for name in (
+        'fun_app/__init__.py',
+        'fun_app/legacy_savers.sh',
+        'fun_app/paths.py',
+        'fun_app/settings.py',
+        'fun_app/gui/__init__.py',
+        'fun_app/gui/config.py',
+        'fun_app/idle/__init__.py',
+        'fun_app/idle/runtime.py',
+        'fun_app/idle/session.py',
+        'fun_app/idle/watcher.py',
+        'fun_app/idle/wayland.py',
+        'fun_app/renderers/__init__.py',
+        'fun_app/renderers/half_block.py',
+        'fun_app/renderers/kitty.py',
+        'fun_app/renderers/playback.py',
+        'fun_app/renderers/terminal.py',
+        'fun_app/scenes/__init__.py',
+        'fun_app/scenes/ambient.py',
+        'fun_app/scenes/ambient_drawing.py',
+        'fun_app/scenes/base.py',
+        'fun_app/scenes/cinematic.py',
+        'fun_app/scenes/classic.py',
+        'fun_app/scenes/drawing.py',
+        'fun_app/scenes/registry.py',
+    )},
+}
 STARTUP = """[Desktop Entry]
 Type=Application
 Name=fun idle screensaver
@@ -256,15 +292,15 @@ def manifest(fs, path, allowed):
 def layout(fs, system, installing):
     if system:
         targets = {}
-        for src in SOURCES:
-            binary = not src.endswith('.py')
-            path = (PREFIX / 'bin' if binary else PREFIX / 'lib/fun') / Path(src).name
+        for src, destination in SOURCES.items():
+            path = PREFIX / destination
+            executable = destination.startswith('bin/') or src == 'extras.py'
             content = None
             if installing:
                 _, content = fs.inspect(ROOT / src, read=True, limit=None)
                 if content is None:
                     raise Conflict(f'Missing source file: {src}')
-            targets[path] = (content, 0o755 if binary or src == 'extras.py' else 0o644)
+            targets[path] = (content, 0o755 if executable else 0o644)
         return PREFIX, PREFIX / 'lib/fun/ownership.json', targets, {}
     home = Path.home()
     config = Path(os.environ.get('XDG_CONFIG_HOME') or home / '.config')
@@ -396,11 +432,23 @@ def operate(action, system=False):
             commit()
 
 
+def validate_sources():
+    for name in SOURCES:
+        path = ROOT / name
+        if name in ('fun', 'fun_app/legacy_savers.sh'):
+            subprocess.run(['/bin/bash', '-n', path], check=True)
+        else:
+            compile(path.read_bytes(), str(path), 'exec')
+
+
 if __name__ == '__main__':
     try:
         action, *args = sys.argv[1:]
+        if action == 'validate' and not args:
+            validate_sources()
+            sys.exit(0)
         if action not in ('install', 'uninstall') or args not in ([], ['system']):
             raise ValueError('invalid installer arguments')
         operate(action, bool(args))
-    except (ValueError, OSError, RecursionError) as exc:
+    except (ValueError, OSError, RecursionError, SyntaxError, subprocess.CalledProcessError) as exc:
         sys.exit(f'fun setup: {exc}')

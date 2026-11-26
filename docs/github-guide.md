@@ -19,7 +19,7 @@ A **commit** is a named checkpoint in the project history. **Pushing** sends loc
 
 ```bash
 git status
-git add README.md assets docs/GITHUB_GUIDE.md
+git add README.md assets docs/github-guide.md
 git commit -m "Refresh project presentation"
 git push origin main
 ```

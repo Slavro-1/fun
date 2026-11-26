@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import extras
 
 
@@ -61,6 +61,6 @@ if __name__ == '__main__':
         verify(sys.argv[2])
     else:
         if len(sys.argv) == 1:
-            sys.exit('usage: python3 tools/liveness.py SCENE [SCENE ...]')
+            sys.exit('usage: python3 tools/rendering/liveness.py SCENE [SCENE ...]')
         outcomes = [subprocess.run([sys.executable, __file__, '--one', name]).returncode for name in sys.argv[1:]]
         sys.exit(any(outcomes))

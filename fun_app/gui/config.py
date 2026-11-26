@@ -1,0 +1,315 @@
+"""GTK4 settings for the fun terminal screensavers."""
+import hashlib
+import os
+from pathlib import Path
+import queue
+import re
+import shutil
+import subprocess
+import sys
+import threading
+
+from .. import settings
+from ..paths import COMMANDS, ENGINE as EXTRAS, ROOT
+
+SNAP = ROOT / 'snap.py' if (ROOT / 'snap.py').is_file() else Path(__file__).with_name('preview.py')
+
+
+def preview_signature():
+    # Changes in scene modules must invalidate cached thumbnails.
+    scene_dir = Path(__file__).resolve().parents[1] / 'scenes'
+    sources = [EXTRAS, *sorted(scene_dir.glob('*.py'))]
+    if SNAP.is_file():
+        sources.append(SNAP)
+    digest = hashlib.sha256()
+    for path in sources:
+        info = path.stat()
+        digest.update(f'{path.name}:{info.st_mtime_ns}:{info.st_size}\n'.encode())
+    signature = digest.hexdigest()
+    return f'{signature[:8]}-{signature[8:16]}'
+
+
+def scene_names():
+    # --list reads the renderer's active SCENES registry, not its aliases.
+    result = subprocess.run([sys.executable, str(EXTRAS), '--list'], capture_output=True, text=True, check=True)
+    return [name for name in result.stdout.splitlines() if name not in settings.RETIRED_SCENES]
+
+
+def count_status(names, enabled):
+    count = sum(name in enabled for name in names)
+    return count, f'{count} of {len(names)} enabled'
+
+
+def prune_retired_thumbnails(cache_root):
+    """Remove only thumbnails whose scene names have been retired."""
+    if cache_root.is_symlink() or not cache_root.is_dir():
+        return
+    for version in cache_root.iterdir():
+        if re.fullmatch(r'[0-9a-f]+-[0-9a-f]+', version.name) and not version.is_symlink() and version.is_dir():
+            for name in settings.RETIRED_SCENES:
+                (version / (name + '.png')).unlink(missing_ok=True)
+                (version / (name + '.tmp.png')).unlink(missing_ok=True)
+
+
+def main():
+    try:
+        import gi
+        gi.require_version('Gtk', '4.0')
+        gi.require_version('Gdk', '4.0')
+        from gi.repository import Gdk, GLib, Gtk
+    except (ImportError, ValueError) as exc:
+        print(f'fun-config: GTK4/PyGObject is required ({exc})', file=sys.stderr)
+        return 2
+    if not Gtk.init_check() or Gdk.Display.get_default() is None:
+        print('fun-config: no graphical display is available', file=sys.stderr)
+        return 2
+
+    names = scene_names()
+    saved = settings.load(names)
+    enabled = set(saved['scenes'] or names) & set(names)
+    if not enabled:
+        enabled = set(names)
+    app = Gtk.Application(application_id='local.fun.Config')
+
+    def activate(application):
+        win = Gtk.ApplicationWindow(application=application, title='fun settings')
+        win.set_default_size(820, 650)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        root.set_margin_top(16); root.set_margin_bottom(16)
+        root.set_margin_start(18); root.set_margin_end(18)
+        win.set_child(root)
+        heading = Gtk.Label(label='Screensavers', xalign=0)
+        heading.add_css_class('title-2')
+        root.append(heading)
+        search = Gtk.SearchEntry(placeholder_text='Search scenes')
+        root.append(search)
+        actionbar = Gtk.Box(spacing=8)
+        root.append(actionbar)
+        select_all = Gtk.Button(label='Select All')
+        deselect_all = Gtk.Button(label='Deselect All')
+        actionbar.append(select_all); actionbar.append(deselect_all)
+        count = Gtk.Label(xalign=1, hexpand=True)
+        actionbar.append(count)
+        scroll = Gtk.ScrolledWindow(vexpand=True, min_content_height=240)
+        root.append(scroll)
+        listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        listbox.add_css_class('boxed-list')
+        scroll.set_child(listbox)
+        rows = {}
+        signature = preview_signature()
+        cache_root = Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache') / 'fun' / 'thumbs'
+        try:
+            prune_retired_thumbnails(cache_root)
+        except OSError:
+            pass
+        cache = cache_root / signature
+        tasks = queue.Queue()
+        queued = set()
+
+        def set_picture(name, path):
+            if path.is_file() and name in rows:
+                try:
+                    rows[name][1].set_paintable(Gdk.Texture.new_from_filename(str(path)))
+                except GLib.Error:
+                    pass
+            return False
+
+        def worker():
+            while True:
+                name = tasks.get()
+                path = cache / (name + '.png')
+                if not path.is_file() and SNAP.is_file():
+                    cache.mkdir(parents=True, exist_ok=True)
+                    temp = cache / (name + '.tmp.png')
+                    try:
+                        subprocess.run([sys.executable, str(SNAP), str(EXTRAS), str(temp), name, '--single'],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=True)
+                        os.replace(temp, path)
+                    except (OSError, subprocess.SubprocessError):
+                        temp.unlink(missing_ok=True)
+                GLib.idle_add(set_picture, name, path)
+                tasks.task_done()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def request_visible(*_):
+            adjustment = scroll.get_vadjustment()
+            visible = [name for name in names if rows[name][2].get_visible()]
+            first = max(0, int(adjustment.get_value() // 104) - 1)
+            last = min(len(visible), first + max(8, int(adjustment.get_page_size() // 104) + 3))
+            for name in visible[first:last]:
+                if name not in queued:
+                    queued.add(name)
+                    path = cache / (name + '.png')
+                    if path.is_file():
+                        set_picture(name, path)
+                    else:
+                        tasks.put(name)
+            return False
+
+        dirty = Gtk.Label(label='', xalign=0)
+        error = Gtk.Label(label='', xalign=0, wrap=True)
+        error.add_css_class('error')
+        loading = [True]
+
+        def current():
+            return dict(minutes=minutes.get_value(), quality=quality.get_active_id(),
+                        order=order.get_active_id(), idle_enabled=idle.get_active(),
+                        idle_minutes=idle_minutes.get_value(), charging_only=charging.get_active(),
+                        scenes=[n for n in names if rows[n][0].get_active()])
+
+        def changed(*_):
+            if loading[0]:
+                return
+            selected = {name for name in names if rows[name][0].get_active()}
+            n, label = count_status(names, selected)
+            count.set_text(label)
+            is_dirty = current() != baseline[0]
+            dirty.set_text('Unsaved changes' if is_dirty else 'All changes saved')
+            save_button.set_sensitive(is_dirty and n > 0)
+            error.set_text('Enable at least one scene before saving.' if n == 0 else '')
+
+        def preview(name):
+            if name not in names:
+                error.set_text(f'{name} is no longer an available scene.')
+                return
+            launch = COMMANDS / 'fun'
+            if shutil.which('kitty'):
+                cmd = ['kitty', '--title', f'fun preview: {name}', str(launch), '--scene', name]
+            elif terminal := next((term for term in ('x-terminal-emulator', 'konsole', 'xterm')
+                                   if shutil.which(term)), None):
+                cmd = [terminal, '-e', str(launch), '--scene', name]
+            else:
+                error.set_text('Install kitty or another terminal emulator to preview scenes.')
+                return
+            try:
+                subprocess.Popen(cmd, start_new_session=True)
+            except OSError as exc:
+                error.set_text(str(exc))
+
+        for name in names:
+            row = Gtk.Box(spacing=14)
+            row.set_margin_top(5); row.set_margin_bottom(5)
+            row.set_margin_start(8); row.set_margin_end(8)
+            picture = Gtk.Picture(width_request=128, height_request=88)
+            picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+            row.append(picture)
+            check = Gtk.CheckButton(label=name.replace('-', ' ').title(), active=name in enabled, hexpand=True)
+            check.connect('toggled', changed)
+            row.append(check)
+            button = Gtk.Button(label='Preview')
+            button.connect('clicked', lambda _button, scene=name: preview(scene))
+            row.append(button)
+            listbox.append(row)
+            rows[name] = (check, picture, row)
+
+        def filter_rows(*_):
+            query = search.get_text().strip().lower()
+            for name in names:
+                rows[name][2].set_visible(query in name.lower())
+            request_visible()
+
+        search.connect('search-changed', filter_rows)
+        scroll.get_vadjustment().connect('value-changed', request_visible)
+        scroll.get_vadjustment().connect('changed', request_visible)
+        select_all.connect('clicked', lambda *_: [rows[n][0].set_active(True) for n in names])
+        deselect_all.connect('clicked', lambda *_: [rows[n][0].set_active(False) for n in names])
+
+        section = Gtk.Label(label='General', xalign=0)
+        section.add_css_class('title-2')
+        root.append(section)
+        grid = Gtk.Grid(column_spacing=18, row_spacing=8)
+        root.append(grid)
+
+        def field(label, widget, r):
+            grid.attach(Gtk.Label(label=label, xalign=0), 0, r, 1, 1)
+            grid.attach(widget, 1, r, 1, 1)
+
+        minutes = Gtk.SpinButton.new_with_range(1, 1440, 1)
+        minutes.set_digits(2)
+        minutes.set_value(saved['minutes']); minutes.connect('value-changed', changed)
+        field('Rotation interval (minutes)', minutes, 0)
+        quality = Gtk.ComboBoxText()
+        for key, label in [('auto','Auto'), ('low','Low'), ('medium','Medium'), ('high','High'), ('ultra','Ultra')]:
+            quality.append(key, label)
+        quality.set_active_id(saved['quality'])
+        quality.connect('changed', changed)
+        field('Graphics quality', quality, 1)
+        order = Gtk.ComboBoxText()
+        order.append('random', 'Random / shuffled'); order.append('sequential', 'Sequential')
+        order.set_active_id(saved['order']); order.connect('changed', changed)
+        field('Rotation order', order, 2)
+        idle = Gtk.Switch(active=saved['idle_enabled'])
+        idle.connect('notify::active', changed)
+        field('Activate on idle', idle, 3)
+        idle_minutes = Gtk.SpinButton.new_with_range(1, 1440, 1)
+        idle_minutes.set_digits(2)
+        idle_minutes.set_value(saved['idle_minutes']); idle_minutes.connect('value-changed', changed)
+        field('Idle delay (minutes)', idle_minutes, 4)
+        charging = Gtk.Switch(active=saved['charging_only'])
+        charging.connect('notify::active', changed)
+        field('Only while charging', charging, 5)
+        diagnostic = Gtk.Label(xalign=0, wrap=True, selectable=True)
+        diagnostic_button = Gtk.Button(label='Check idle activation')
+        field('Idle diagnostics', diagnostic_button, 6)
+        report_view = Gtk.ScrolledWindow(max_content_height=160, propagate_natural_height=True)
+        report_view.set_child(diagnostic)
+        root.append(report_view)
+        watcher = str(COMMANDS / 'fun-idle')
+
+        def check_idle(*_, details=True):
+            def probe():
+                try:
+                    result = subprocess.run([watcher, '--diagnose'], capture_output=True, text=True, timeout=30)
+                    message = (result.stdout.strip() or result.stderr.strip()) if details else ''
+                    if result.returncode:
+                        message = ('Idle activation needs attention. ' + (message or 'Choose Check idle activation for details.'))
+                except (OSError, subprocess.SubprocessError) as exc:
+                    message = str(exc)
+                GLib.idle_add(diagnostic.set_text, message)
+            threading.Thread(target=probe, daemon=True).start()
+
+        diagnostic_button.connect('clicked', check_idle)
+        check_idle(details=False)
+        root.append(error)
+        footer = Gtk.Box(spacing=8)
+        root.append(footer)
+        footer.append(dirty)
+        spacer = Gtk.Box(hexpand=True)
+        footer.append(spacer)
+        restore = Gtk.Button(label='Restore Defaults')
+        footer.append(restore)
+        save_button = Gtk.Button(label='Save / Apply')
+        save_button.add_css_class('suggested-action')
+        footer.append(save_button)
+        baseline = [dict(saved, scenes=[n for n in names if n in enabled])]
+
+        def restore_defaults(*_):
+            data = settings.DEFAULTS
+            minutes.set_value(data['minutes']); quality.set_active_id(data['quality'])
+            order.set_active_id(data['order']); idle.set_active(data['idle_enabled'])
+            idle_minutes.set_value(data['idle_minutes']); charging.set_active(data['charging_only'])
+            for name in names:
+                rows[name][0].set_active(True)
+            changed()
+
+        def save(*_):
+            try:
+                data = current()
+                settings.save(data, names)
+                if data['idle_enabled']:
+                    subprocess.Popen([watcher, '--autostart'], start_new_session=True)
+                baseline[0] = data
+                changed()
+            except (OSError, ValueError) as exc:
+                error.set_text(str(exc))
+
+        restore.connect('clicked', restore_defaults)
+        save_button.connect('clicked', save)
+        loading[0] = False
+        changed()
+        GLib.idle_add(request_visible)
+        win.present()
+
+    app.connect('activate', activate)
+    return app.run(sys.argv)

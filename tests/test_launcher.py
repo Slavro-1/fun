@@ -18,8 +18,10 @@ class LauncherTests(unittest.TestCase):
         self.home = Path(self.enterContext(tempfile.TemporaryDirectory()))
         src = self.home / 'project with spaces'
         src.mkdir()
-        for name in ('fun', 'fun_settings.py'):
-            shutil.copy2(ROOT / name, src)
+        for name in ('fun', 'fun_app/settings.py', 'fun_app/legacy_savers.sh'):
+            target = src / name
+            target.parent.mkdir(exist_ok=True)
+            shutil.copy2(ROOT / name, target)
         self.fun = src / 'fun'
         self.engine = src / 'extras.py'
         self.engine.write_text("""import os,sys,time

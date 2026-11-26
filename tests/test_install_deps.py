@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 
-HELPER = Path(__file__).with_name('install-deps.sh').resolve()
+HELPER = Path(__file__).resolve().parents[1] / 'installer/dependencies.sh'
 PYTHON_WRAPPER = """#!/bin/bash
 exec "$TEST_PYTHON" -S "$@"
 """

@@ -3,6 +3,7 @@ import os
 import select
 from pathlib import Path
 import json
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -39,17 +40,14 @@ class LoginTests(unittest.TestCase):
         src = self.root / 'src'
         src.mkdir()
         prefix = str(self.root / 'stage')
-        for name in ('install.sh', 'uninstall.sh', 'fun-idle', 'fun-config', 'fun', 'fun_settings.py',
-                     'fun_wayland.py', 'fun_runtime.py', 'fun_session.py'):
-            target = src / name
-            target.write_text((ROOT / name).read_text().replace('/usr/local', prefix))
-            target.chmod(0o755)
-        (src / 'tools').mkdir()
-        # Package prompting and the renderer have independent suites.
-        (src / 'tools/install-deps.sh').write_text('installer_distro() { :; }; check_dependencies() { :; }')
-        helper = (ROOT / 'tools/install_files.py').read_text().replace('/usr/local', prefix)
-        (src / 'tools/install_files.py').write_text(helper)
-        (src / 'tools/snap.py').touch()
+        for name in ('install.sh', 'uninstall.sh', 'fun-idle', 'fun-config', 'fun'):
+            shutil.copy2(ROOT / name, src)
+        for name in ('fun_app', 'installer'):
+            shutil.copytree(ROOT / name, src / name, ignore=shutil.ignore_patterns('__pycache__'))
+        # Package prompting and the full renderer self-test have independent checks.
+        (src / 'installer/dependencies.sh').write_text('installer_distro() { :; }; check_dependencies() { :; }')
+        helper = (ROOT / 'installer/install_files.py').read_text().replace('/usr/local', prefix)
+        (src / 'installer/install_files.py').write_text(helper)
         (src / 'extras.py').write_text('print("fixture scene check passed")')
         script(self.bin / 'sudo', '[ "$1" = /usr/bin/python3 ] || exit 99; exec "$@"')
         script(self.bin / 'systemctl', 'exit 1')
@@ -72,6 +70,7 @@ class LoginTests(unittest.TestCase):
         self.assertFalse(entry.exists())
         self.assertFalse(Path(prefix, 'bin/fun-idle').exists())
         self.assertFalse(Path(prefix, 'lib/fun/fun_wayland.py').exists())
+        self.assertFalse(Path(prefix, 'lib/fun/fun_app/scenes/registry.py').exists())
         self.assertEqual(self.cfg.read_bytes(), settings)
 
     def test_manual_window_singleton_and_watcher_death(self):

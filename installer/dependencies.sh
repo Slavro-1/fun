@@ -21,7 +21,7 @@ installer_package_manager() {
 }
 
 PYTHON_CHECK='import sys, tomllib; sys.exit(sys.version_info < (3, 11))'
-# Keep the imports in sync with fun-config and tools/snap.py.
+# Keep the imports in sync with fun_app/gui/config.py and fun_app/gui/preview.py.
 GTK_CHECK='import gi; gi.require_version("Gtk", "4.0"); gi.require_version("Gdk", "4.0"); from gi.repository import Gdk, GLib, Gtk; Gtk.ContentFit.CONTAIN'
 PILLOW_CHECK='from PIL import Image, ImageDraw, ImageFont; Image.Resampling.NEAREST'
 

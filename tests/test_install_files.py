@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools import install_files as setup
+from installer import install_files as setup
 
 
 class FileTests(unittest.TestCase):
@@ -50,6 +50,27 @@ class FileTests(unittest.TestCase):
         self.assertFalse(self.exe.exists())
         self.assertFalse(self.entry.exists())
         self.assertTrue(backup.is_file())
+
+    def test_upgrade_from_flat_program_manifest(self):
+        legacy_paths = {
+            'bin/fun', 'bin/fun-idle', 'bin/fun-config', 'lib/fun/extras.py',
+            'lib/fun/fun_settings.py', 'lib/fun/fun_wayland.py', 'lib/fun/fun_runtime.py',
+            'lib/fun/fun_session.py', 'lib/fun/snap.py',
+        }
+        legacy_sources = {src: dst for src, dst in setup.SOURCES.items() if dst in legacy_paths}
+        self.assertEqual(set(legacy_sources.values()), legacy_paths)
+        with patch.object(setup, 'SOURCES', legacy_sources):
+            setup.operate('install')
+        registry = self.prefix / 'lib/fun/fun_app/scenes/registry.py'
+        self.assertFalse(registry.exists())
+
+        setup.operate('install')
+        manifest = json.loads(self.record.read_text())
+        self.assertEqual(set(manifest['files']), {str(self.prefix / dst) for dst in setup.SOURCES.values()})
+        self.assertEqual(registry.read_text(), 'source fun_app/scenes/registry.py')
+        setup.operate('uninstall')
+        self.assertFalse(registry.exists())
+        self.assertTrue(all(not (self.prefix / dst).exists() for dst in legacy_paths))
 
     def test_legacy_requires_explicit_adoption(self):
         self.exe.parent.mkdir(parents=True)

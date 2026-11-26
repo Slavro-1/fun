@@ -13,7 +13,10 @@ Generated previews and local development files are excluded from Git. Add screen
 
 ## v0.1.1 release candidate
 
-Run the commands in `.github/workflows/verify.yml` from the repository root.
+Run the commands in [the verification workflow](../.github/workflows/verify.yml)
+from the repository root. In a graphical session, run
+`/usr/bin/python3 -I tests/gui_smoke.py` to exercise the GTK controls with
+disposable preferences.
 The unittest suite includes disposable-prefix upgrades, conflicts, rollback,
 settings validation, GUI scene inventory, rotation and idle watcher fixtures.
 
