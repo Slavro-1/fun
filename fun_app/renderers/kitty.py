@@ -93,6 +93,9 @@ def make_gfx_scene(cls, cols, rows, pixel_width=0, pixel_height=0, quality=_GFX_
     return scene
 
 
+_RGB_OFFSETS = (2, 1, 0) if sys.byteorder == 'little' else (1, 2, 3)
+
+
 def _rgb_bytes(pixels, width, dither=False):
     # The strided channel copies run in C. The scene's packed-int API stays unchanged.
     packed = array.array('I', pixels)
@@ -100,16 +103,36 @@ def _rgb_bytes(pixels, width, dither=False):
         return bytes(value for pixel in pixels for value in (pixel >> 16, pixel >> 8 & 255, pixel & 255))
     data = packed.tobytes()
     raw = bytearray(len(pixels) * 3)
-    offsets = (2, 1, 0) if sys.byteorder == 'little' else (1, 2, 3)
-    for channel, offset in enumerate(offsets):
-        plane = data[offset::4]
-        if dither:
-            # A fixed 2x2 pattern offsets two samples by one RGB level in opposite directions.
-            plane = bytearray(plane)
-            for begin in range(0, len(plane) - width, 2 * width):
-                end = begin + width
-                plane[begin:end:2] = plane[begin:end:2].translate(_DITHER_UP)
-                plane[end+1:end+width:2] = plane[end+1:end+width:2].translate(_DITHER_DOWN)
+    if not dither:
+        o0, o1, o2 = _RGB_OFFSETS
+        raw[0::3] = data[o0::4]
+        raw[1::3] = data[o1::4]
+        raw[2::3] = data[o2::4]
+        return raw
+    up_tbl = _DITHER_UP
+    dn_tbl = _DITHER_DOWN
+    if not (width & 1):
+        # Even widths let even/odd columns be sliced directly into contiguous row spans.
+        hw = width >> 1
+        stop = (len(pixels) >> 1) - hw
+        for channel, offset in enumerate(_RGB_OFFSETS):
+            evens = bytearray(data[offset::8])
+            odds = bytearray(data[offset + 4::8])
+            for begin in range(0, stop, width):
+                mid = begin + hw
+                evens[begin:mid] = evens[begin:mid].translate(up_tbl)
+                odds[mid:begin + width] = odds[mid:begin + width].translate(dn_tbl)
+            raw[channel::6] = evens
+            raw[channel + 3::6] = odds
+        return raw
+    step = 2 * width
+    stop = len(pixels) - width
+    for channel, offset in enumerate(_RGB_OFFSETS):
+        plane = bytearray(data[offset::4])
+        for begin in range(0, stop, step):
+            end = begin + width
+            plane[begin:end:2] = plane[begin:end:2].translate(up_tbl)
+            plane[end+1:end+width:2] = plane[end+1:end+width:2].translate(dn_tbl)
         raw[channel::3] = plane
     return raw
 
@@ -139,7 +162,7 @@ class _PosixShm:
         self.unlink.argtypes = (ctypes.c_char_p,)
         self.unlink.restype = ctypes.c_int
         self.errno = ctypes.get_errno
-        self.prefix = b'/fun-' + os.urandom(6).hex().encode('ascii')
+        self.prefix = b'/fun-' + os.urandom(6).hex().encode('ascii') + b'-'
         self.serial = 0
         self.pending = set()
 
@@ -155,20 +178,25 @@ class _PosixShm:
         if len(self.pending) >= 4:
             raise OSError('kitty stopped consuming shared frames')
         self.serial += 1
-        name = self.prefix + b'-' + str(self.serial).encode('ascii')
+        name = self.prefix + str(self.serial).encode('ascii')
         self.pending.add(name)
         fd = self.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         if fd < 0:
             self.pending.remove(name)
             raise OSError(self.errno(), 'could not create shared frame')
         try:
-            os.ftruncate(fd, len(pixels))
-            remaining = memoryview(pixels)
-            while remaining:
-                count = os.write(fd, remaining)
+            length = len(pixels)
+            os.ftruncate(fd, length)
+            count = os.write(fd, pixels)
+            if count < length:
                 if not count:
                     raise OSError('short shared frame write')
-                remaining = remaining[count:]
+                remaining = memoryview(pixels)[count:]
+                while remaining:
+                    count = os.write(fd, remaining)
+                    if not count:
+                        raise OSError('short shared frame write')
+                    remaining = remaining[count:]
         except BaseException:
             self.unlink(name)
             self.pending.discard(name)
@@ -193,6 +221,9 @@ class KittyGraphics:
         self.active = False
         self.interrupted = False
         self.payload_prefix = f'a=T,i={self.image_id},p=1,f=24,q=2,C=1,'
+        self._header_key = None
+        self._shm_header = b''
+        self._zlib_header = b''
         self.delete = _gfx_command(f'a=d,d=I,i={self.image_id},q=2')
 
     def _accepts(self, medium, payload):
@@ -233,8 +264,14 @@ class KittyGraphics:
         return backend
 
     def packet(self, pixels, width, height, cols, rows, dither=False):
-        fields = self.payload_prefix + f's={width},v={height},c={cols},r={rows}'
         raw = _rgb_bytes(pixels, width, dither and self.shm is not None)
+        key = (width, height, cols, rows, len(raw))
+        if key != self._header_key:
+            self._header_key = key
+            base = (b'\x1b[?2026h\x1b[H' + _GFX_START
+                    + (self.payload_prefix + f's={width},v={height},c={cols},r={rows}').encode('ascii'))
+            self._shm_header = base + f',t=s,S={len(raw)};'.encode('ascii')
+            self._zlib_header = base + b',t=d,o=z,m='
         if self.shm is not None:
             try:
                 name = self.shm.write(raw)
@@ -243,15 +280,22 @@ class KittyGraphics:
                 self.shm.clear()
                 self.shm = None
             else:
-                return b'\x1b[?2026h\x1b[H' + _gfx_command(fields + f',t=s,S={len(raw)}',
-                                                         base64.b64encode(name)) + b'\x1b[?2026l'
+                return self._shm_header + base64.b64encode(name) + b'\x1b\\\x1b[?2026l'
         compressed = base64.b64encode(zlib.compress(raw, 1))
-        chunks = []
-        for start in range(0, len(compressed), 4096):
-            more = int(start + 4096 < len(compressed))
-            header = f'm={more}' if start else fields + f',t=d,o=z,m={more}'
-            chunks.append(_gfx_command(header, compressed[start:start + 4096]))
-        return b'\x1b[?2026h\x1b[H' + b''.join(chunks) + b'\x1b[?2026l'
+        total = len(compressed)
+        if total <= 4096:
+            return self._zlib_header + b'0;' + compressed + b'\x1b\\\x1b[?2026l'
+        mv = memoryview(compressed)
+        chunks = [self._zlib_header, b'1;', mv[:4096], _GFX_END]
+        last = ((total - 1) // 4096) * 4096
+        for start in range(4096, last, 4096):
+            chunks.append(b'\x1b_Gm=1;')
+            chunks.append(mv[start:start + 4096])
+            chunks.append(_GFX_END)
+        chunks.append(b'\x1b_Gm=0;')
+        chunks.append(mv[last:])
+        chunks.append(b'\x1b\\\x1b[?2026l')
+        return b''.join(chunks)
 
     def show(self, frame, scene, cols, rows):
         data = self.packet(frame, scene.W, scene.H, cols, rows, scene.gfx_dither)
